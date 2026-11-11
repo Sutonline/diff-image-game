@@ -24,23 +24,20 @@
             <svg class="upload-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
             </svg>
-            <p>点击选择、拖拽图片至此</p>
-            <span class="subtext">或直接按下 <strong>Ctrl / Cmd + V</strong> 粘贴截图</span>
+            <p>点击选择或拖拽图片至此</p>
+            <span class="subtext">支持直接 <strong>Ctrl / Cmd + V</strong> 粘贴截图</span>
             <input type="file" id="fileInput" accept="image/*" hidden>
           </div>
           <div id="fileNameDisplay" class="file-info hidden"></div>
         </section>
 
         <section class="card settings-card">
-          <div class="settings-header">
-            <h2>2. 参数微调</h2>
-            <button id="resetParamsBtn" class="text-btn" title="恢复默认参数">↺ 默认</button>
-          </div>
+          <h2>2. 参数微调</h2>
 
           <div class="form-group">
             <label for="splitMode">切分模式</label>
             <select id="splitMode">
-              <option value="auto">⚡ 自动判断 (手机长图/并排图自适应)</option>
+              <option value="auto">⚡ 自动判断 (支持手机长图与左右并排)</option>
               <option value="horizontal">↔️ 左右并排 (水平)</option>
               <option value="vertical">↕️ 上下并排 (垂直)</option>
             </select>
@@ -61,7 +58,7 @@
               <span id="minAreaVal" class="val-badge">50</span>
             </div>
             <input type="range" id="minArea" min="5" max="500" value="50">
-            <span class="hint">过滤掉小于该面积的微小散斑与宏块噪波</span>
+            <span class="hint">过滤掉小于该面积的微小散斑与噪波</span>
           </div>
 
           <div class="form-group">
@@ -70,126 +67,67 @@
               <span id="blurRadiusVal" class="val-badge">3</span>
             </div>
             <input type="range" id="blurRadius" min="1" max="15" step="2" value="3">
-            <span class="hint">高斯滤波核，平滑图片自然纹理与压缩边缘</span>
+            <span class="hint">平滑自然渐变色与压缩边缘</span>
           </div>
 
           <button id="compareBtn" class="btn primary-btn" disabled>
             开始对比检测
           </button>
         </section>
-
-        <!-- 快捷操作指南卡片 -->
-        <section class="card shortcut-card">
-          <h2>💡 便捷操作提示</h2>
-          <ul class="shortcut-list">
-            <li><kbd>Cmd/Ctrl+V</kbd> 页面任意位置粘贴截图</li>
-            <li><kbd>滚轮</kbd> 以光标为中心自由缩放图片</li>
-            <li><kbd>按住左键拖拽</kbd> 放大后平移画布</li>
-            <li><kbd>长按空格 Space</kbd> 随时瞬间切换对比原图</li>
-            <li><kbd>双击图片</kbd> 快速切换 100% / 150% 放大</li>
-          </ul>
-        </section>
       </aside>
 
       <!-- 结果展示主区域 -->
       <section class="content-area">
-        <!-- 交互式图片画布视口容器 -->
-        <div id="previewContainer" class="preview-container">
+        <!-- 差异统计条 (纯统计，不堆叠坐标列表) -->
+        <div id="statusBanner" class="status-banner hidden">
+          <div class="stat-item">
+            <span class="stat-label">差异数量:</span>
+            <span id="diffCount" class="stat-value highlight">-</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">切分排布:</span>
+            <span id="activeMode" class="stat-value">-</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">计算耗时:</span>
+            <span id="execTime" class="stat-value">-</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-badge">🛡️ 红圈互斥无重叠</span>
+          </div>
+        </div>
+
+        <!-- 图片展示卡片 -->
+        <div class="card preview-card">
           <div id="emptyState" class="empty-state">
             <div class="empty-icon">🖼️</div>
             <h3>等待上传游戏截图</h3>
-            <p>在左侧上传或使用 <strong>Cmd/Ctrl+V</strong> 粘贴找茬游戏截图，系统将自动切分并标出所有非重叠差异</p>
+            <p>在左侧上传或使用 <strong>Cmd/Ctrl+V</strong> 粘贴截图，系统自动标出所有差异</p>
           </div>
 
           <div id="loadingOverlay" class="loading-overlay hidden">
             <div class="spinner"></div>
-            <p>正在执行亚像素配准与差异几何分析...</p>
+            <p>正在分析比对并合并差异...</p>
           </div>
 
-          <!-- 便捷缩放/全屏/对比工具栏 -->
-          <div id="imageToolbar" class="image-toolbar hidden">
-            <div class="toolbar-group">
-              <button id="zoomOutBtn" class="tool-btn" title="缩小 (快捷键: -)">🔍−</button>
-              <button id="zoomResetBtn" class="tool-btn zoom-indicator" title="点击复位至 100%">100%</button>
-              <button id="zoomInBtn" class="tool-btn" title="放大 (快捷键: +)">🔍+</button>
-              <button id="fitViewBtn" class="tool-btn" title="自适应窗口大小 (快捷键: 0)">⤢ 适应窗口</button>
-            </div>
-            <div class="toolbar-divider"></div>
-            <div class="toolbar-group">
-              <button id="toggleOriginalBtn" class="tool-btn highlight-btn" title="长按或按住空格 Space 对比无标注原图">👁️ 对比原图</button>
-              <button id="downloadBtn" class="tool-btn" title="下载带红圈标注的高清结果图">💾 保存图片</button>
-              <button id="fullscreenBtn" class="tool-btn" title="切换全屏查看 (快捷键: F)">⛶ 全屏</button>
-            </div>
-          </div>
-
-          <!-- 缩放与平移图层视口 -->
+          <!-- 结果图片 (点击看图放大) -->
           <div id="resultViewer" class="result-viewer hidden">
-            <div id="stageViewport" class="stage-viewport">
-              <div id="transformLayer" class="transform-layer">
-                <img id="annotatedImage" alt="Annotated Game Sheet" draggable="false">
-              </div>
+            <div class="image-box" title="点击放大查看">
+              <img id="annotatedImage" alt="比对结果图">
+              <div class="zoom-hint">🔍 点击放大图片</div>
             </div>
           </div>
-        </div>
-
-        <!-- 差异分析统计卡片 (替代原先臃肿的平铺列表) -->
-        <div id="diffStatsCard" class="card diff-stats-card hidden">
-          <div class="stats-card-header">
-            <div class="title-with-badge">
-              <h3>📊 差异检测统计</h3>
-              <span id="overlapRuleBadge" class="rule-badge">🛡️ 互斥无重叠规则已生效</span>
-            </div>
-            <span id="execTimeBadge" class="time-badge">耗时: - ms</span>
-          </div>
-
-          <!-- 核心统计指标仪表板 -->
-          <div class="stats-grid">
-            <div class="stat-box primary-stat">
-              <span class="box-label">差异总数</span>
-              <span id="statDiffCount" class="box-value highlight">-</span>
-              <span class="box-sub">已完成独立聚类去重</span>
-            </div>
-            <div class="stat-box">
-              <span class="box-label">尺寸区间 (半径)</span>
-              <span id="statRadiusRange" class="box-value">-</span>
-              <span id="statRadiusAvg" class="box-sub">均值: - px</span>
-            </div>
-            <div class="stat-box">
-              <span class="box-label">覆盖面积 (总和)</span>
-              <span id="statAreaTotal" class="box-value">-</span>
-              <span id="statAreaAvg" class="box-sub">均值: - px²</span>
-            </div>
-            <div class="stat-box">
-              <span class="box-label">切分排布模式</span>
-              <span id="statSplitMode" class="box-value">-</span>
-              <span id="statResolution" class="box-sub">-</span>
-            </div>
-          </div>
-
-          <!-- 折叠式详细坐标清单 (按需查看与复制) -->
-          <details id="diffDetailsFold" class="diff-details-fold">
-            <summary class="fold-summary">
-              <span>查看全部差异坐标与几何参数明细 (<span id="foldCount">0</span> 项)</span>
-              <button id="copyReportBtn" class="text-btn small-btn" type="button" title="复制格式化坐标报表">📋 复制坐标报表</button>
-            </summary>
-            <div class="details-table-wrapper">
-              <table class="details-table">
-                <thead>
-                  <tr>
-                    <th>编号</th>
-                    <th>参考图全局坐标</th>
-                    <th>对照图全局坐标</th>
-                    <th>圆半径</th>
-                    <th>连通域面积</th>
-                  </tr>
-                </thead>
-                <tbody id="diffTableBody"></tbody>
-              </table>
-            </div>
-          </details>
         </div>
       </section>
     </main>
+  </div>
+
+  <!-- 轻量看图放大遮罩层 (点击外部或图片即缩小关闭) -->
+  <div id="lightboxOverlay" class="lightbox-overlay hidden" title="点击任意空白处缩小返回">
+    <div class="lightbox-content">
+      <img id="lightboxImage" alt="放大预览">
+      <div class="lightbox-close-hint">点击外部任意区域或按 ESC 缩小退出</div>
+    </div>
   </div>
 
   <script src="/static/app.js"></script>
