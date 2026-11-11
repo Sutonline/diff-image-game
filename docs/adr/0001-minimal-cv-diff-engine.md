@@ -1,0 +1,3 @@
+# 0001 Minimal CV Difference Engine without Vision LLMs
+
+The tool compares game sheets to spot visual discrepancies locally and deterministically. We choose a Python stack using FastAPI, OpenCV, and NumPy over multimodal LLMs or complex external vision APIs, starting with a lightweight classical CV pipeline (Gaussian blur, absolute difference, Otsu/adaptive thresholding, morphological closure, contour clustering) with automatic panel splitting and homography registration. This provides instant sub-100ms feedback, zero token cost, complete offline operation, and predictable debuggability with minimal dependencies.

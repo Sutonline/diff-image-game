@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>图片找茬游戏比对工具 - Spot The Difference</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="app-container">
+    <header class="app-header">
+      <div class="header-content">
+        <h1>🎯 找茬游戏自动对比工具</h1>
+        <span class="badge">纯本地 CV 引擎 / 零大模型依赖</span>
+      </div>
+    </header>
+
+    <main class="app-main">
+      <!-- 控制侧边栏 -->
+      <aside class="sidebar">
+        <section class="card upload-card">
+          <h2>1. 上传游戏截图</h2>
+          <div id="dropZone" class="drop-zone">
+            <svg class="upload-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path>
+            </svg>
+            <p>点击选择或将找茬图拖曳至此</p>
+            <span class="subtext">支持 PNG, JPG, JPEG, WebP</span>
+            <input type="file" id="fileInput" accept="image/*" hidden>
+          </div>
+          <div id="fileNameDisplay" class="file-info hidden"></div>
+        </section>
+
+        <section class="card settings-card">
+          <h2>2. 参数微调</h2>
+
+          <div class="form-group">
+            <label for="splitMode">切分模式</label>
+            <select id="splitMode">
+              <option value="auto">⚡ 自动判断 (根据宽高比)</option>
+              <option value="horizontal">↔️ 左右并排 (水平)</option>
+              <option value="vertical">↕️ 上下并排 (垂直)</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <div class="label-row">
+              <label for="diffThreshold">敏感度 (阈值)</label>
+              <span id="diffThresholdVal" class="val-badge">25</span>
+            </div>
+            <input type="range" id="diffThreshold" min="5" max="100" value="25">
+            <span class="hint">值越低越敏感（可能产生噪点），值越高越严格</span>
+          </div>
+
+          <div class="form-group">
+            <div class="label-row">
+              <label for="minArea">噪点过滤面积 (px²)</label>
+              <span id="minAreaVal" class="val-badge">40</span>
+            </div>
+            <input type="range" id="minArea" min="5" max="500" value="40">
+            <span class="hint">过滤掉小于该面积的微小散斑</span>
+          </div>
+
+          <div class="form-group">
+            <div class="label-row">
+              <label for="blurRadius">滤波去噪半径</label>
+              <span id="blurRadiusVal" class="val-badge">3</span>
+            </div>
+            <input type="range" id="blurRadius" min="1" max="15" step="2" value="3">
+            <span class="hint">高斯模糊核，平滑压缩噪波</span>
+          </div>
+
+          <button id="compareBtn" class="btn primary-btn" disabled>
+            开始对比检测
+          </button>
+        </section>
+      </aside>
+
+      <!-- 结果展示主区域 -->
+      <section class="content-area">
+        <div id="statusBanner" class="status-banner hidden">
+          <div class="stat-item">
+            <span class="stat-label">差异数量:</span>
+            <span id="diffCount" class="stat-value highlight">-</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">切分模式:</span>
+            <span id="activeMode" class="stat-value">-</span>
+          </div>
+          <div class="stat-item">
+            <span class="stat-label">处理耗时:</span>
+            <span id="execTime" class="stat-value">-</span>
+          </div>
+        </div>
+
+        <div class="preview-container">
+          <div id="emptyState" class="empty-state">
+            <div class="empty-icon">🖼️</div>
+            <h3>等待上传图片</h3>
+            <p>在左侧上传找茬游戏截图，系统将自动切分并用红圈标出差异区域</p>
+          </div>
+
+          <div id="loadingOverlay" class="loading-overlay hidden">
+            <div class="spinner"></div>
+            <p>正在执行局部配准与差异分析...</p>
+          </div>
+
+          <div id="resultViewer" class="result-viewer hidden">
+            <div class="image-wrapper">
+              <img id="annotatedImage" alt="Annotated Game Sheet">
+            </div>
+          </div>
+        </div>
+
+        <!-- 差异列表卡片 -->
+        <div id="diffDetailsCard" class="card diff-details-card hidden">
+          <h3>差异区域列表</h3>
+          <div id="diffList" class="diff-list"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

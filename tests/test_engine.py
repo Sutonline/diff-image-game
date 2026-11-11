@@ -1,0 +1,92 @@
+import cv2
+import numpy as np
+import pytest
+from diff_game.engine import split_game_sheet
+
+
+def test_split_game_sheet_horizontal_auto():
+    # A wide image (800x400), should split horizontally into left (reference) and right (target)
+    img = np.zeros((400, 800, 3), dtype=np.uint8)
+    img[:, :400] = 100  # Left panel
+    img[:, 400:] = 200  # Right panel
+
+    ref, tgt, mode = split_game_sheet(img, split_mode="auto")
+    assert mode == "horizontal"
+    assert ref.shape == (400, 400, 3)
+    assert tgt.shape == (400, 400, 3)
+    assert np.all(ref == 100)
+    assert np.all(tgt == 200)
+
+
+def test_split_game_sheet_vertical_auto():
+    # A tall image (400x800), should split vertically into top (reference) and bottom (target)
+    img = np.zeros((800, 400, 3), dtype=np.uint8)
+    img[:400, :] = 50   # Top panel
+    img[400:, :] = 150  # Bottom panel
+
+    ref, tgt, mode = split_game_sheet(img, split_mode="auto")
+    assert mode == "vertical"
+    assert ref.shape == (400, 400, 3)
+    assert tgt.shape == (400, 400, 3)
+    assert np.all(ref == 50)
+    assert np.all(tgt == 150)
+
+
+def test_split_game_sheet_manual_override():
+    # A square image (400x400) forced to horizontal
+    img = np.zeros((400, 400, 3), dtype=np.uint8)
+    ref, tgt, mode = split_game_sheet(img, split_mode="horizontal")
+    assert mode == "horizontal"
+    assert ref.shape == (400, 200, 3)
+    assert tgt.shape == (400, 200, 3)
+
+
+def test_detect_differences_identical():
+    from diff_game.engine import detect_differences
+    panel = np.ones((200, 200, 3), dtype=np.uint8) * 128
+    diffs = detect_differences(panel, panel)
+    assert len(diffs) == 0
+
+
+def test_detect_differences_single_anomaly():
+    from diff_game.engine import detect_differences
+    ref = np.ones((200, 200, 3), dtype=np.uint8) * 128
+    tgt = ref.copy()
+    # Draw a prominent white rectangle on target at (50, 50) of size 30x30 (area 900)
+    cv2.rectangle(tgt, (50, 50), (80, 80), (255, 255, 255), -1)
+
+    diffs = detect_differences(ref, tgt, diff_threshold=25, min_area=50)
+    assert len(diffs) == 1
+    d = diffs[0]
+    # Check center is near (65, 65)
+    assert abs(d.center_x - 65) <= 5
+    assert abs(d.center_y - 65) <= 5
+    assert d.area >= 800
+
+
+def test_detect_differences_filters_noise():
+    from diff_game.engine import detect_differences
+    ref = np.ones((200, 200, 3), dtype=np.uint8) * 128
+    tgt = ref.copy()
+    # Draw a 2x2 tiny noise speck (area 4)
+    tgt[50:52, 50:52] = 255
+
+    diffs = detect_differences(ref, tgt, diff_threshold=25, min_area=30)
+    assert len(diffs) == 0
+
+
+def test_compare_game_sheet_end_to_end():
+    from diff_game.engine import compare_game_sheet
+    # 400x200 composite (horizontal)
+    composite = np.ones((200, 400, 3), dtype=np.uint8) * 128
+    # Add difference on right panel (x=300, y=100)
+    cv2.circle(composite, (300, 100), 15, (0, 0, 255), -1)
+
+    result, annotated = compare_game_sheet(composite, split_mode="auto", min_area=50)
+    assert result.difference_count == 1
+    assert annotated.shape == composite.shape
+    # Check that red circles were drawn on both left panel and right panel
+    # Left panel (x=100, y=100) should now have red annotations
+    # Red is (0, 0, 255) in BGR
+    assert np.any(annotated[:, :200, 2] > 200)
+    assert np.any(annotated[:, 200:, 2] > 200)
