@@ -30,8 +30,8 @@ async def read_index():
 async def api_compare(
     file: UploadFile = File(...),
     split_mode: str = Form("auto"),
-    diff_threshold: int = Form(25),
-    min_area: int = Form(40),
+    diff_threshold: int = Form(18),
+    min_area: int = Form(50),
     blur_radius: int = Form(3),
 ):
     try:

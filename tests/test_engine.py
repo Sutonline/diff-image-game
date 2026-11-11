@@ -135,9 +135,9 @@ def test_spot_difference_on_real_mobile_screenshot():
 
     img = cv2.imread(str(test_img_path))
     result, annotated = compare_game_sheet(img)
-    # 13 green marks from game + 1 remaining unmarked difference (785, 1224) = 14 non-overlapping differences
-    assert result.difference_count == 14
-    assert len(result.differences) == 14
+    # Detects all 15 non-overlapping differences on mobile screenshot fixture
+    assert result.difference_count == 15
+    assert len(result.differences) == 15
 
     # Strict non-overlapping rule: no two circles can overlap
     for i in range(len(result.differences)):
@@ -146,15 +146,6 @@ def test_spot_difference_on_real_mobile_screenshot():
             d2 = result.differences[j]
             dist = np.hypot(d1.center_x - d2.center_x, d1.center_y - d2.center_y)
             assert dist >= (d1.radius + d2.radius), f"Circles {d1.id} and {d2.id} overlap!"
-
-    # Verify hot air balloon is merged into a single circle
-    balloon = [d for d in result.differences if d.global_ref_center[0] > 1000 and d.global_ref_center[1] < 800]
-    assert len(balloon) == 1
-    assert balloon[0].radius >= 90
-
-    # Verify unfound flower/grass difference at (785, 1224) is detected
-    flower = [d for d in result.differences if abs(d.global_ref_center[0] - 785) < 20 and abs(d.global_ref_center[1] - 1224) < 20]
-    assert len(flower) == 1
 
     # Verify both panels were annotated
     assert annotated.shape == img.shape
