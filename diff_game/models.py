@@ -1,4 +1,4 @@
-from typing import List, Tuple
+from typing import List, Tuple, Optional
 from pydantic import BaseModel, Field
 
 
@@ -11,6 +11,8 @@ class DifferenceMark(BaseModel):
         description="(x, y, width, height)"
     )
     area: float
+    global_ref_center: Optional[Tuple[int, int]] = None
+    global_tgt_center: Optional[Tuple[int, int]] = None
 
 
 class DiffResult(BaseModel):

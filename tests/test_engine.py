@@ -90,3 +90,19 @@ def test_compare_game_sheet_end_to_end():
     # Red is (0, 0, 255) in BGR
     assert np.any(annotated[:, :200, 2] > 200)
     assert np.any(annotated[:, 200:, 2] > 200)
+
+
+def test_spot_difference_on_real_mobile_screenshot():
+    from pathlib import Path
+    from diff_game.engine import compare_game_sheet
+
+    test_img_path = Path.home() / "Downloads" / "test.jpg"
+    if not test_img_path.exists():
+        pytest.skip("Local fixture ~/Downloads/test.jpg not found")
+
+    img = cv2.imread(str(test_img_path))
+    result, annotated = compare_game_sheet(img)
+    assert result.difference_count == 15
+    assert len(result.differences) == 15
+    # Verify both panels were annotated
+    assert annotated.shape == img.shape

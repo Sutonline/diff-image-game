@@ -147,9 +147,12 @@ document.addEventListener('DOMContentLoaded', () => {
       data.differences.forEach(diff => {
         const item = document.createElement('div');
         item.className = 'diff-item';
+        const refCoord = diff.global_ref_center ? `(${diff.global_ref_center[0]}, ${diff.global_ref_center[1]})` : `(${diff.center_x}, ${diff.center_y})`;
+        const tgtCoord = diff.global_tgt_center ? `(${diff.global_tgt_center[0]}, ${diff.global_tgt_center[1]})` : '-';
         item.innerHTML = `
           <span class="diff-badge">#${diff.id}</span>
-          <span>中心: (${diff.center_x}, ${diff.center_y})</span>
+          <span>原图: ${refCoord}</span>
+          <span>对照: ${tgtCoord}</span>
           <span>半径: ${diff.radius}px</span>
         `;
         diffList.appendChild(item);
