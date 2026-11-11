@@ -92,6 +92,39 @@ def test_compare_game_sheet_end_to_end():
     assert np.any(annotated[:, 200:, 2] > 200)
 
 
+def test_merge_overlapping_circles_single_balloon():
+    from diff_game.models import DifferenceMark
+    from diff_game.engine import merge_overlapping_circles
+
+    # Two overlapping difference marks (e.g. top and bottom of hot air balloon)
+    m1 = DifferenceMark(
+        id=1,
+        center_x=1027,
+        center_y=246,
+        radius=50,
+        bounding_box=(977, 196, 100, 100),
+        area=1200.0,
+    )
+    m2 = DifferenceMark(
+        id=2,
+        center_x=1122,
+        center_y=304,
+        radius=62,
+        bounding_box=(1060, 242, 124, 124),
+        area=5000.0,
+    )
+    # Distance is ~111.3, r1 + r2 = 112 -> they overlap
+    merged = merge_overlapping_circles([m1, m2], buffer_ratio=1.0)
+    assert len(merged) == 1
+    m = merged[0]
+    assert m.id == 1
+    # Bounding circle must encompass both original centers + radii
+    d1 = np.hypot(m.center_x - m1.center_x, m.center_y - m1.center_y)
+    d2 = np.hypot(m.center_x - m2.center_x, m.center_y - m2.center_y)
+    assert d1 + m1.radius <= m.radius + 1
+    assert d2 + m2.radius <= m.radius + 1
+
+
 def test_spot_difference_on_real_mobile_screenshot():
     from pathlib import Path
     from diff_game.engine import compare_game_sheet
@@ -102,7 +135,26 @@ def test_spot_difference_on_real_mobile_screenshot():
 
     img = cv2.imread(str(test_img_path))
     result, annotated = compare_game_sheet(img)
-    assert result.difference_count == 15
-    assert len(result.differences) == 15
+    # 13 green marks from game + 1 remaining unmarked difference (785, 1224) = 14 non-overlapping differences
+    assert result.difference_count == 14
+    assert len(result.differences) == 14
+
+    # Strict non-overlapping rule: no two circles can overlap
+    for i in range(len(result.differences)):
+        for j in range(i + 1, len(result.differences)):
+            d1 = result.differences[i]
+            d2 = result.differences[j]
+            dist = np.hypot(d1.center_x - d2.center_x, d1.center_y - d2.center_y)
+            assert dist >= (d1.radius + d2.radius), f"Circles {d1.id} and {d2.id} overlap!"
+
+    # Verify hot air balloon is merged into a single circle
+    balloon = [d for d in result.differences if d.global_ref_center[0] > 1000 and d.global_ref_center[1] < 800]
+    assert len(balloon) == 1
+    assert balloon[0].radius >= 90
+
+    # Verify unfound flower/grass difference at (785, 1224) is detected
+    flower = [d for d in result.differences if abs(d.global_ref_center[0] - 785) < 20 and abs(d.global_ref_center[1] - 1224) < 20]
+    assert len(flower) == 1
+
     # Verify both panels were annotated
     assert annotated.shape == img.shape

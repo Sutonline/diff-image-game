@@ -101,36 +101,80 @@ def split_game_sheet(
     return ref, tgt, effective_mode
 
 
-def apply_circular_nms(marks: List[DifferenceMark], overlap_threshold: float = 1.0) -> List[DifferenceMark]:
+def merge_overlapping_circles(
+    marks: List[DifferenceMark], buffer_ratio: float = 1.05
+) -> List[DifferenceMark]:
     """
-    Non-Maximum Suppression for circular difference marks.
-    Merges or eliminates sub-marks that fall within or heavily overlap an already confirmed larger mark.
+    Guarantees that NO difference marks overlap.
+    Iteratively merges any pair of circular marks whose distance is less than
+    the sum of their radii (dist < (r1 + r2) * buffer_ratio) into a single
+    minimum enclosing circle encompassing both marks.
     """
     if not marks:
         return []
 
-    sorted_marks = sorted(marks, key=lambda m: m.area, reverse=True)
-    kept: List[DifferenceMark] = []
+    current = list(marks)
+    changed = True
+    while changed:
+        changed = False
+        new_list: List[DifferenceMark] = []
+        used = set()
+        for i in range(len(current)):
+            if i in used:
+                continue
+            merged = current[i]
+            for j in range(i + 1, len(current)):
+                if j in used:
+                    continue
+                m2 = current[j]
+                dist = np.hypot(merged.center_x - m2.center_x, merged.center_y - m2.center_y)
+                # Overlap condition: circles intersect or touch within buffer
+                if dist < (merged.radius + m2.radius) * buffer_ratio:
+                    if dist == 0:
+                        new_r = max(merged.radius, m2.radius)
+                        new_cx, new_cy = merged.center_x, merged.center_y
+                    else:
+                        ux = (m2.center_x - merged.center_x) / dist
+                        uy = (m2.center_y - merged.center_y) / dist
+                        p1x = merged.center_x - ux * merged.radius
+                        p1y = merged.center_y - uy * merged.radius
+                        p2x = m2.center_x + ux * m2.radius
+                        p2y = m2.center_y + uy * m2.radius
+                        new_cx = int(round((p1x + p2x) / 2))
+                        new_cy = int(round((p1y + p2y) / 2))
+                        new_r = int(round(np.hypot(p2x - p1x, p2y - p1y) / 2))
 
-    for mark in sorted_marks:
-        merged = False
-        for k in kept:
-            dist = np.hypot(mark.center_x - k.center_x, mark.center_y - k.center_y)
-            # If centers are within the radius of either mark, they belong to the same difference spot
-            if dist < max(k.radius, mark.radius) * overlap_threshold or dist < (k.radius + mark.radius) * 0.65:
-                # Expand the larger circle's radius to encompass the merged feature
-                k.radius = max(k.radius, int(dist + mark.radius * 0.7))
-                k.area += mark.area
-                merged = True
-                break
-        if not merged:
-            kept.append(mark)
+                    merged = DifferenceMark(
+                        id=0,
+                        center_x=new_cx,
+                        center_y=new_cy,
+                        radius=new_r,
+                        bounding_box=(
+                            max(0, new_cx - new_r),
+                            max(0, new_cy - new_r),
+                            2 * new_r,
+                            2 * new_r,
+                        ),
+                        area=merged.area + m2.area,
+                    )
+                    used.add(j)
+                    changed = True
+            new_list.append(merged)
+            used.add(i)
+        current = new_list
 
-    kept.sort(key=lambda m: (m.center_y, m.center_x))
-    for idx, m in enumerate(kept, start=1):
+    current.sort(key=lambda m: (m.center_y, m.center_x))
+    for idx, m in enumerate(current, start=1):
         m.id = idx
 
-    return kept
+    return current
+
+
+def apply_circular_nms(marks: List[DifferenceMark], overlap_threshold: float = 1.0) -> List[DifferenceMark]:
+    """
+    Backward-compatible alias for merge_overlapping_circles.
+    """
+    return merge_overlapping_circles(marks, buffer_ratio=overlap_threshold)
 
 
 def detect_differences(
@@ -213,8 +257,8 @@ def detect_differences(
             )
         )
 
-    # Apply Circular NMS to suppress nested redundant marks
-    return apply_circular_nms(raw_marks)
+    # Apply strict non-overlapping merge to guarantee red circles do not overlap
+    return merge_overlapping_circles(raw_marks, buffer_ratio=1.0)
 
 
 def annotate_game_sheet(
@@ -268,8 +312,8 @@ def annotate_game_sheet(
 def compare_game_sheet(
     image: np.ndarray,
     split_mode: str = "auto",
-    diff_threshold: int = 22,
-    min_area: int = 80,
+    diff_threshold: int = 18,
+    min_area: int = 50,
     blur_radius: int = 3,
 ) -> Tuple[DiffResult, np.ndarray]:
     """
