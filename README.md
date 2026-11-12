@@ -1,5 +1,13 @@
 # 🎯 Spot The Difference Game Tool (图片找茬游戏比对工具)
 
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.9+-3776AB?style=flat&logo=python&logoColor=white" alt="Python 3.9+">
+  <img src="https://img.shields.io/badge/OpenCV-4.x-5C3EE8?style=flat&logo=opencv&logoColor=white" alt="OpenCV">
+  <img src="https://img.shields.io/badge/FastAPI-0.100+-009688?style=flat&logo=fastapi&logoColor=white" alt="FastAPI">
+  <img src="https://img.shields.io/badge/Architecture-Pure%20CV%20%2F%20No%20LLM-orange?style=flat" alt="No LLM">
+  <img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat" alt="MIT License">
+</p>
+
 > **纯本地运行 · 零大模型/外部API依赖 · 毫秒级自动比对 · 严格红圈互斥无重叠**
 
 一个轻量、极简的找茬游戏（Spot the Difference）辅助比对工具。无需调用任何大模型或云端 API，完全在本地端完成游戏截图的自动视口裁切、图像配准与差异圈出。
@@ -71,74 +79,7 @@ python run.py
 📍 访问地址: http://127.0.0.1:8000
 ```
 
-打开浏览器访问 **`http://127.0.0.1:8000`** 即可使用。
-
----
-
-## 🎮 怎么使用工具
-
-### 1. 导入截图
-* **剪贴板一键粘贴（最便捷）**：使用微信截图或系统截图（Mac: `Cmd+Shift+4`，Win: `Win+Shift+S`）后，**直接在网页按 `Cmd + V` / `Ctrl + V`**，无需保存图片即可秒级开始比对。
-* **文件上传**：点击左侧上传框选择文件，或直接把截图拖拽至虚线框中。
-
-### 2. 查看比对结果
-* **红圈标注**：系统自动完成上下/左右视口切分，并在两幅图相同位置标出带编号的红色圆圈。
-* **零重叠保证**：相连或相近的目标（如热气球、大树连通域）已自动合为一个独立红圈，绝无红圈重叠。
-* **统计信息**：结果顶部清晰展示检出差异总数、切分排布及底层计算耗时。
-
-### 3. 看图自由放大与缩小
-* **点击放大**：直接点击比对结果图片，即可弹出全屏大图预览。
-* **滑动条自由缩放**：弹出层顶部配备放大滑动条（支持 `50% ~ 300%` 连续缩放）以及 `100%` / `150%` / `200%` 快捷档位；滚动鼠标滚轮也可平滑缩放。
-* **点击外部缩小**：**点击图片外部任意暗色区域**（或按键盘 `Esc` 键），即可立即缩小退出，返回主界面。
-
-### 4. 参数微调说明（日常使用保持默认即可）
-若遇到极特殊的游戏图片，可在左侧面板自由调节参数：
-* **敏感度 (阈值)**（默认 `18`）：数值越小越敏感，能抓出极淡色差；若原图 JPEG 噪点较多可适当调高。
-* **噪点过滤面积**（默认 `50 px²`）：过滤掉小于该像素面积的孤立噪波。
-* **滤波去噪半径**（默认 `3`）：高斯滤波核大小，平滑自然纹理。
-* **切分模式**（默认 `自动判断`）：通常自动识别手机截图与左右并排图，必要时可强制指定。
-
----
-
-## 🧪 运行测试
-
-如需验证算法正确性与接口健康，可在根目录下执行：
-
-```bash
-PYTHONPATH=. pytest tests/
-```
-
-测试套件将自动运行并验证：
-* 视口智能裁剪与黑边滤除
-* 噪点隔离与单差异定位
-* 严格互斥无重叠合并算法 (`merge_overlapping_circles`)
-* 真实手机截图 fixture 实测校验
-
----
-
-## 📁 项目目录结构
-
-```text
-diff-image-game/
-├── assets/                    # README 演示图集
-│   ├── demo_original.jpg      # test2.jpg 原始截图
-│   └── demo_annotated.jpg     # test2.jpg 21处差异自动标注结果
-├── diff_game/                 # 核心模块
-│   ├── app.py                 # FastAPI 服务与比对接口
-│   ├── engine.py              # 图像配准、阈值分析与互斥合并引擎
-│   ├── models.py              # 数据结构定义
-│   └── static/                # Web 前端 (HTML5 / CSS / 原生 JS)
-│       ├── app.js             # 剪贴板粘贴、弹层滑动条缩放、点击外部退出
-│       ├── index.html         # 界面布局与统计横幅
-│       └── style.css          # 现代化深色主题
-├── tests/                     # 自动化测试用例
-│   ├── test_app.py            # API 接口自动化测试
-│   └── test_engine.py         # CV 引擎与互斥合并测试
-├── pyproject.toml             # 项目元信息
-├── pytest.ini                 # Pytest 运行配置
-├── requirements.txt           # 依赖清单
-└── run.py                     # 本地快速启动脚本
-```
+打开浏览器访问 **`http://127.0.0.1:8000`** 即可使用（支持直接按 `Cmd + V` / `Ctrl + V` 粘贴截屏或拖拽图片）。
 
 ---
 
