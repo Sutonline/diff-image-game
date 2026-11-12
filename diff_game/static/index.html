@@ -122,12 +122,32 @@
     </main>
   </div>
 
-  <!-- 轻量看图放大遮罩层 (点击外部或图片即缩小关闭) -->
-  <div id="lightboxOverlay" class="lightbox-overlay hidden" title="点击任意空白处缩小返回">
-    <div class="lightbox-content">
-      <img id="lightboxImage" alt="放大预览">
-      <div class="lightbox-close-hint">点击外部任意区域或按 ESC 缩小退出</div>
+  <!-- 自由放大弹出图层 (支持滑动条自由缩放，点击外部空白缩小退出) -->
+  <div id="lightboxOverlay" class="lightbox-overlay hidden">
+    <!-- 顶部滑动条控制栏 -->
+    <div class="lightbox-toolbar" id="lightboxToolbar">
+      <div class="slider-control">
+        <label for="lightboxZoomSlider">🔍 放大比例</label>
+        <input type="range" id="lightboxZoomSlider" min="50" max="300" step="5" value="100">
+        <span id="lightboxZoomVal" class="zoom-val-badge">100%</span>
+      </div>
+      <div class="zoom-presets">
+        <button class="preset-btn" data-scale="100">100%</button>
+        <button class="preset-btn" data-scale="150">150%</button>
+        <button class="preset-btn" data-scale="200">200%</button>
+        <button class="preset-btn" data-scale="250">250%</button>
+      </div>
+      <button id="closeLightboxBtn" class="lightbox-close-btn" title="缩小退出 (ESC)">✕ 缩小退出</button>
     </div>
+
+    <!-- 视口容器：点击图片外的半透明空白背景即缩小关闭 -->
+    <div class="lightbox-viewport" id="lightboxViewport">
+      <div class="lightbox-image-box" id="lightboxImageBox">
+        <img id="lightboxImage" alt="放大预览">
+      </div>
+    </div>
+
+    <div class="lightbox-backdrop-hint">💡 点击外部暗色区域或按 ESC 即可缩小退出</div>
   </div>
 
   <script src="/static/app.js"></script>

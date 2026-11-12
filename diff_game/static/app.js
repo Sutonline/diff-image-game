@@ -22,9 +22,16 @@ document.addEventListener('DOMContentLoaded', () => {
   const activeMode = document.getElementById('activeMode');
   const execTime = document.getElementById('execTime');
 
-  // Lightbox Zoom Elements (点击放大，点击外部缩小)
+  // Lightbox Zoom Elements (自由放大滑动条，点击外部缩小)
   const lightboxOverlay = document.getElementById('lightboxOverlay');
+  const lightboxToolbar = document.getElementById('lightboxToolbar');
+  const lightboxViewport = document.getElementById('lightboxViewport');
+  const lightboxImageBox = document.getElementById('lightboxImageBox');
   const lightboxImage = document.getElementById('lightboxImage');
+  const lightboxZoomSlider = document.getElementById('lightboxZoomSlider');
+  const lightboxZoomVal = document.getElementById('lightboxZoomVal');
+  const closeLightboxBtn = document.getElementById('closeLightboxBtn');
+  const presetBtns = document.querySelectorAll('.preset-btn');
   const imageBox = document.querySelector('.image-box');
 
   let currentFile = null;
@@ -161,26 +168,90 @@ document.addEventListener('DOMContentLoaded', () => {
     execTime.textContent = `${data.execution_time_ms} ms`;
   }
 
-  // ==========================================
-  // 点击看图放大，点击外部/图片即可缩小退出
-  // ==========================================
+  // ========================================================
+  // 自由放大弹出图层交互：滑动条控制比例，点击外部空白缩小退出
+  // ========================================================
 
-  // 点击图片区域 -> 放大显示
+  function applyLightboxZoom(scalePercent) {
+    const val = Math.max(50, Math.min(300, parseInt(scalePercent, 10) || 100));
+    lightboxZoomSlider.value = val;
+    lightboxZoomVal.textContent = `${val}%`;
+    lightboxImageBox.style.transform = `scale(${val / 100})`;
+
+    presetBtns.forEach(btn => {
+      btn.classList.toggle('active', parseInt(btn.dataset.scale, 10) === val);
+    });
+  }
+
+  // 点击结果图片 -> 打开自由放大弹出层
   imageBox.addEventListener('click', () => {
     if (annotatedImage.src) {
       lightboxOverlay.classList.remove('hidden');
+      applyLightboxZoom(100);
+      lightboxViewport.scrollTop = 0;
+      lightboxViewport.scrollLeft = 0;
     }
   });
 
-  // 点击遮罩外部或图片任意区域 -> 立即缩小关闭
-  lightboxOverlay.addEventListener('click', () => {
+  // 滑动条实时缩放比例
+  lightboxZoomSlider.addEventListener('input', (e) => {
+    applyLightboxZoom(e.target.value);
+  });
+
+  // 预设比例快捷按钮 (100%, 150%, 200%, 250%)
+  presetBtns.forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      applyLightboxZoom(btn.dataset.scale);
+    });
+  });
+
+  // 鼠标滚轮在弹出层中微调缩放比例
+  lightboxViewport.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const currentVal = parseInt(lightboxZoomSlider.value, 10);
+    const step = e.deltaY < 0 ? 10 : -10;
+    applyLightboxZoom(currentVal + step);
+  }, { passive: false });
+
+  // 阻止控制栏内部点击冒泡，避免误触发关闭
+  lightboxToolbar.addEventListener('click', (e) => {
+    e.stopPropagation();
+  });
+
+  // 点击图片本身阻止冒泡，避免误触发关闭
+  lightboxImageBox.addEventListener('click', (e) => {
+    e.stopPropagation();
+  });
+
+  // 点击外部任意空白区域 (遮罩或视口边缘) -> 立即缩小关闭
+  function closeLightbox() {
     lightboxOverlay.classList.add('hidden');
+    applyLightboxZoom(100);
+  }
+
+  lightboxOverlay.addEventListener('click', (e) => {
+    if (e.target === lightboxOverlay) {
+      closeLightbox();
+    }
+  });
+
+  lightboxViewport.addEventListener('click', (e) => {
+    // 点击图片之外的视口空白背景即可缩小退出
+    if (e.target === lightboxViewport) {
+      closeLightbox();
+    }
+  });
+
+  closeLightboxBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    closeLightbox();
   });
 
   // 按 ESC 键快速关闭缩小
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && !lightboxOverlay.classList.contains('hidden')) {
-      lightboxOverlay.classList.add('hidden');
+      closeLightbox();
     }
   });
 });

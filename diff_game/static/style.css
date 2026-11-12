@@ -355,18 +355,19 @@ input[type="range"] {
   opacity: 1;
 }
 
-/* 简易看图放大遮罩层 (点击任意外部缩小退出) */
+/* 自由放大弹出图层 (支持滑动条放大比例，点击外部空白缩小) */
 .lightbox-overlay {
   position: fixed;
   inset: 0;
-  background-color: rgba(0, 0, 0, 0.88);
-  backdrop-filter: blur(8px);
+  background-color: rgba(15, 23, 42, 0.94);
+  backdrop-filter: blur(10px);
   z-index: 9999;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
-  cursor: zoom-out;
-  padding: 20px;
+  justify-content: flex-start;
+  padding: 16px 20px;
+  cursor: default;
   animation: fadeIn 0.2s ease-out;
 }
 
@@ -375,39 +376,140 @@ input[type="range"] {
   to { opacity: 1; }
 }
 
-.lightbox-content {
-  position: relative;
+/* 顶部滑动条控制栏 */
+.lightbox-toolbar {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  max-width: 95vw;
-  max-height: 95vh;
+  justify-content: space-between;
+  gap: 20px;
+  background-color: rgba(30, 41, 59, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 40px;
+  padding: 8px 24px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+  z-index: 10;
+  max-width: 900px;
+  width: 100%;
 }
 
-.lightbox-content img {
+.slider-control {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+}
+
+.slider-control label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #e2e8f0;
+  white-space: nowrap;
+}
+
+.slider-control input[type="range"] {
+  flex: 1;
+  max-width: 260px;
+  accent-color: var(--primary-color);
+  cursor: pointer;
+}
+
+.zoom-val-badge {
+  font-family: monospace;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #38bdf8;
+  background-color: #0f172a;
+  padding: 2px 8px;
+  border-radius: 4px;
+  min-width: 48px;
+  text-align: center;
+}
+
+.zoom-presets {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.preset-btn {
+  background-color: #0f172a;
+  border: 1px solid var(--border-color);
+  color: #cbd5e1;
+  font-size: 0.75rem;
+  padding: 3px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.preset-btn:hover {
+  border-color: #38bdf8;
+  color: #38bdf8;
+}
+
+.preset-btn.active {
+  background-color: var(--primary-color);
+  border-color: var(--primary-color);
+  color: #fff;
+}
+
+.lightbox-close-btn {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #f8fafc;
+  padding: 4px 12px;
+  border-radius: 20px;
+  font-size: 0.82rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.lightbox-close-btn:hover {
+  background-color: rgba(239, 68, 68, 0.2);
+  border-color: var(--accent-red);
+  color: var(--accent-red);
+}
+
+/* 视口容器：点击外部空白即缩小关闭 */
+.lightbox-viewport {
+  width: 100%;
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  cursor: zoom-out; /* 提示点击外部缩小 */
+}
+
+/* 图片容器：点击图片本身不关闭，支持自由平滑缩放 */
+.lightbox-image-box {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+  transition: transform 0.15s ease-out;
+  transform-origin: center center;
+}
+
+.lightbox-image-box img {
   display: block;
-  max-width: 95vw;
-  max-height: 90vh;
+  max-width: 90vw;
+  max-height: 80vh;
   object-fit: contain;
   border-radius: 6px;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.8);
-  cursor: zoom-out;
-  animation: zoomIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.8);
+  pointer-events: auto;
 }
 
-@keyframes zoomIn {
-  from { transform: scale(0.92); opacity: 0; }
-  to { transform: scale(1); opacity: 1; }
-}
-
-.lightbox-close-hint {
-  margin-top: 10px;
+.lightbox-backdrop-hint {
   color: #94a3b8;
-  font-size: 0.8rem;
-  background-color: rgba(15, 23, 42, 0.6);
-  padding: 4px 12px;
-  border-radius: 12px;
+  font-size: 0.78rem;
   pointer-events: none;
+  margin-top: 8px;
+  text-align: center;
 }
 
 .hidden {
