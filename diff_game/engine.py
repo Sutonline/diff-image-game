@@ -7,63 +7,121 @@ from diff_game.models import DifferenceMark, DiffResult
 
 def detect_viewports(image: np.ndarray, split_mode: str = "auto") -> Tuple[Tuple[int, int, int, int], Tuple[int, int, int, int], str]:
     """
-    Detects the active game viewports (Reference Panel and Target Panel) within a composite image.
-    Handles both cropped game sheets and full mobile screenshots (with status/nav bars).
+    Detects active game viewports (Reference Panel and Target Panel) within a composite image.
+    Handles cropped game sheets, WeChat desktop mini programs, and full mobile screenshots.
     Returns: (ref_box, tgt_box, effective_mode) where box is (x, y, width, height).
     """
     height, width = image.shape[:2]
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 and image.shape[2] == 3 else image.copy()
 
-    # 1. Vertical correlation for tall images (common in mobile phone screenshots)
-    if split_mode in ("auto", "vertical") and height > width * 1.2:
-        template_h = int(height * 0.15)
-        template_y = int(height * 0.25)
-        crop_w_margin = int(width * 0.1)
-        template = gray[template_y:template_y + template_h, crop_w_margin:width - crop_w_margin]
+    # 1. Vertical periodic matching for dual vertical panels
+    if split_mode in ("auto", "vertical") and height > width * 1.1:
+        best_val = -1.0
+        best_delta_y = 0
 
-        search_area = gray[int(height * 0.45):int(height * 0.85), crop_w_margin:width - crop_w_margin]
-        res = cv2.matchTemplate(search_area, template, cv2.TM_CCOEFF_NORMED)
-        _, max_val, _, max_loc = cv2.minMaxLoc(res)
+        # Scan candidate template heights and positions
+        for ty_ratio in [0.08, 0.15, 0.22, 0.30]:
+            tpl_y = int(height * ty_ratio)
+            tpl_h = max(30, int(height * 0.12))
+            crop_x = int(width * 0.1)
+            tpl = gray[tpl_y:tpl_y + tpl_h, crop_x:width - crop_x]
+            search_area = gray[int(height * 0.38):, crop_x:width - crop_x]
 
-        # High confidence vertical periodic match indicates mobile dual-panel layout
-        if max_val > 0.75:
-            delta_y = int(height * 0.45) + max_loc[1] - template_y
+            res = cv2.matchTemplate(search_area, tpl, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, max_loc = cv2.minMaxLoc(res)
 
-            # Detect sharp frame borders using Sobel Y
-            sobel_y = np.abs(cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3))
-            edge_profile = np.mean(sobel_y[:, crop_w_margin:width - crop_w_margin], axis=1)
+            if max_val > best_val:
+                best_val = max_val
+                best_delta_y = int(height * 0.38) + max_loc[1] - tpl_y
 
-            search_start = max(0, template_y - int(height * 0.15))
-            search_end = min(height, template_y + int(height * 0.05))
-            top_y = search_start + int(np.argmax(edge_profile[search_start:search_end]))
+        if best_val > 0.65 and best_delta_y > height * 0.3:
+            delta_y = best_delta_y
 
-            ref_box = (0, int(top_y), width, int(delta_y))
-            tgt_box = (0, int(top_y + delta_y), width, int(delta_y))
+            # Determine active panel bounds via row-by-row consistency between panels
+            valid_h = height - delta_y
+            margin_x = int(width * 0.08)
+            row_diffs = np.zeros(valid_h, dtype=np.float32)
+            for y in range(valid_h):
+                r1 = gray[y, margin_x:width - margin_x].astype(np.float32)
+                r2 = gray[y + delta_y, margin_x:width - margin_x].astype(np.float32)
+                row_diffs[y] = np.mean(np.abs(r1 - r2))
+
+            sorted_diffs = np.sort(row_diffs)
+            base_diff = np.median(sorted_diffs[:int(valid_h * 0.4)])
+            threshold = max(25.0, base_diff * 4.0)
+
+            is_panel = (row_diffs < threshold).astype(np.uint8)
+            k = np.ones((max(20, int(valid_h * 0.08)), 1), dtype=np.uint8)
+            closed = cv2.morphologyEx(is_panel, cv2.MORPH_CLOSE, k).flatten()
+
+            nz = np.where(closed > 0)[0]
+            if len(nz) > 0:
+                panel_y = int(nz[0])
+                panel_h = min(delta_y, int(nz[-1] - nz[0]))
+            else:
+                panel_y = 0
+                panel_h = delta_y
+
+            ref_box = (0, int(panel_y), width, int(panel_h))
+            tgt_box = (0, int(panel_y + delta_y), width, int(delta_y if panel_h >= delta_y else panel_h))
             return ref_box, tgt_box, "vertical"
 
     # 2. Horizontal correlation for wide images
-    if split_mode in ("auto", "horizontal") and width > height * 1.5:
-        template_w = int(width * 0.15)
-        template_x = int(width * 0.25)
-        crop_h_margin = int(height * 0.1)
-        template = gray[crop_h_margin:height - crop_h_margin, template_x:template_x + template_w]
+    if split_mode in ("auto", "horizontal") and width > height * 1.3:
+        best_val = -1.0
+        best_delta_x = 0
 
-        search_area = gray[crop_h_margin:height - crop_h_margin, int(width * 0.45):int(width * 0.85)]
-        res = cv2.matchTemplate(search_area, template, cv2.TM_CCOEFF_NORMED)
-        _, max_val, _, max_loc = cv2.minMaxLoc(res)
+        for tx_ratio in [0.08, 0.15, 0.22, 0.30]:
+            tpl_x = int(width * tx_ratio)
+            tpl_w = max(30, int(width * 0.12))
+            crop_y = int(height * 0.1)
+            tpl = gray[crop_y:height - crop_y, tpl_x:tpl_x + tpl_w]
+            search_area = gray[crop_y:height - crop_y, int(width * 0.38):]
 
-        if max_val > 0.75:
-            delta_x = int(width * 0.45) + max_loc[0] - template_x
+            res = cv2.matchTemplate(search_area, tpl, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, max_loc = cv2.minMaxLoc(res)
 
-            sobel_x = np.abs(cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3))
-            edge_profile = np.mean(sobel_x[crop_h_margin:height - crop_h_margin, :], axis=0)
+            if max_val > best_val:
+                best_val = max_val
+                best_delta_x = int(width * 0.38) + max_loc[0] - tpl_x
 
-            search_start = max(0, template_x - int(width * 0.15))
-            search_end = min(width, template_x + int(width * 0.05))
-            left_x = search_start + int(np.argmax(edge_profile[search_start:search_end]))
+        if best_val > 0.65 and best_delta_x > width * 0.3:
+            delta_x = best_delta_x
+            valid_w = width - delta_x
+            margin_y = int(height * 0.08)
+            col_diffs = np.zeros(valid_w, dtype=np.float32)
+            for x in range(valid_w):
+                c1 = gray[margin_y:height - margin_y, x].astype(np.float32)
+                c2 = gray[margin_y:height - margin_y, x + delta_x].astype(np.float32)
+                col_diffs[x] = np.mean(np.abs(c1 - c2))
 
-            ref_box = (int(left_x), 0, int(delta_x), height)
-            tgt_box = (int(left_x + delta_x), 0, int(delta_x), height)
+            sorted_diffs = np.sort(col_diffs)
+            base_diff = np.median(sorted_diffs[:int(valid_w * 0.4)])
+            threshold = max(18.0, base_diff * 3.5)
+            is_panel = col_diffs < threshold
+
+            max_start = 0
+            max_len = 0
+            curr_start = None
+            for i, val in enumerate(is_panel):
+                if val and curr_start is None:
+                    curr_start = i
+                elif not val and curr_start is not None:
+                    if (i - curr_start) > max_len:
+                        max_len = i - curr_start
+                        max_start = curr_start
+                    curr_start = None
+            if curr_start is not None and (len(is_panel) - curr_start) > max_len:
+                max_len = len(is_panel) - curr_start
+                max_start = curr_start
+
+            panel_x = max_start
+            panel_w = max_len
+            if panel_w < delta_x * 0.5:
+                panel_w = delta_x
+
+            ref_box = (int(panel_x), 0, int(panel_w), height)
+            tgt_box = (int(panel_x + delta_x), 0, int(delta_x if panel_w >= delta_x else panel_w), height)
             return ref_box, tgt_box, "horizontal"
 
     # 3. Standard 50% split fallback for plain game sheets without extraneous UI

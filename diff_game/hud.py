@@ -112,8 +112,22 @@ def detect_game_window() -> Optional[Dict[str, Any]]:
     return windows[0]
 
 
+def activate_wechat_window() -> None:
+    """Brings WeChat to the front to ensure no other window occludes the game view."""
+    try:
+        subprocess.run(
+            ["osascript", "-e", 'tell application "System Events" to set frontmost of process "WeChat" to true'],
+            capture_output=True,
+            timeout=2.0,
+        )
+        time.sleep(0.25)
+    except Exception:
+        pass
+
+
 def capture_window_rect(x: int, y: int, width: int, height: int, output_path: str = "/tmp/hud_game_capture.png") -> str:
-    """Captures a specific screen rectangle using macOS screencapture."""
+    """Captures a specific screen rectangle using macOS screencapture after activating WeChat."""
+    activate_wechat_window()
     cmd = ["screencapture", "-x", f"-R{x},{y},{width},{height}", output_path]
     res = subprocess.run(cmd, capture_output=True)
     if res.returncode != 0 or not os.path.exists(output_path):
