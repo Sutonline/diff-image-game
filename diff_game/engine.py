@@ -289,20 +289,9 @@ def detect_differences(
     blurred_ref = cv2.GaussianBlur(gray_ref, (ksize, ksize), 0)
     blurred_tgt = cv2.GaussianBlur(gray_tgt, (ksize, ksize), 0)
 
-    # Subpixel global alignment (absorbs 1-3px micro-shift between mini program panels)
-    if panel_h > 100 and panel_w > 100:
-        shift, _ = cv2.phaseCorrelate(
-            np.float32(blurred_ref[int(panel_h * 0.1):int(panel_h * 0.9), int(panel_w * 0.1):int(panel_w * 0.9)]),
-            np.float32(blurred_tgt[int(panel_h * 0.1):int(panel_h * 0.9), int(panel_w * 0.1):int(panel_w * 0.9)]),
-        )
-        dx = int(round(shift[0]))
-        dy = int(round(shift[1]))
-        if abs(dx) <= 5 and abs(dy) <= 5 and (dx != 0 or dy != 0):
-            M = np.float32([[1, 0, dx], [0, 1, dy]])
-            blurred_tgt = cv2.warpAffine(blurred_tgt, M, (panel_w, panel_h))
-
-    # Shift-tolerant difference (tolerates 1-2 pixel micro-jitter / subpixel rendering shifts)
-    tol_k = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    # Shift-tolerant difference (morphological tolerance absorbs 1-2 pixel micro-jitter / Retina subpixel shifts without warping)
+    k_dim = 5 if panel_w > 500 else 3
+    tol_k = cv2.getStructuringElement(cv2.MORPH_RECT, (k_dim, k_dim))
     diff_ref = np.maximum(0, blurred_ref.astype(np.int16) - cv2.dilate(blurred_tgt, tol_k).astype(np.int16))
     diff_tgt = np.maximum(0, blurred_tgt.astype(np.int16) - cv2.dilate(blurred_ref, tol_k).astype(np.int16))
     diff = np.maximum(diff_ref, diff_tgt).astype(np.uint8)
