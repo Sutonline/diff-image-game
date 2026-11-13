@@ -23,11 +23,8 @@ OVERLAY_BIN_PATH = Path(__file__).parent / "overlay_bin"
 
 
 def ensure_overlay_binary() -> Path:
-    """Ensures the native Swift overlay binary is compiled and up-to-date."""
-    if not OVERLAY_BIN_PATH.exists() or (
-        OVERLAY_SWIFT_SOURCE.exists()
-        and OVERLAY_SWIFT_SOURCE.stat().st_mtime > OVERLAY_BIN_PATH.stat().st_mtime
-    ):
+    """Ensures the native Swift overlay binary exists."""
+    if not OVERLAY_BIN_PATH.exists():
         print("🔨 编译原生 macOS 透明悬浮窗组件 (Swift)...")
         res = subprocess.run(
             ["swiftc", "-O", str(OVERLAY_SWIFT_SOURCE), "-o", str(OVERLAY_BIN_PATH)],
@@ -39,53 +36,33 @@ def ensure_overlay_binary() -> Path:
     return OVERLAY_BIN_PATH
 
 
+FIND_WINDOWS_BIN = Path(__file__).parent / "find_windows"
+FIND_WINDOWS_SRC = Path(__file__).parent / "find_windows.c"
+
+
+def ensure_find_windows_binary() -> Path:
+    """Ensures native C window finder binary exists."""
+    if not FIND_WINDOWS_BIN.exists() and FIND_WINDOWS_SRC.exists():
+        subprocess.run(
+            ["clang", "-O2", "-framework", "CoreGraphics", "-framework", "CoreFoundation", str(FIND_WINDOWS_SRC), "-o", str(FIND_WINDOWS_BIN)],
+            capture_output=True,
+        )
+    return FIND_WINDOWS_BIN
+
+
 def list_wechat_windows() -> List[Dict[str, Any]]:
     """
-    Queries on-screen windows via CoreGraphics and returns WeChat Mini Program candidates.
+    Queries on-screen windows via native CoreGraphics binary and returns WeChat candidates.
     """
-    swift_script = """
-    import CoreGraphics
-    import Foundation
-
-    guard let windowList = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] else {
-        exit(0)
-    }
-
-    var candidates: [[String: Any]] = []
-    for w in windowList {
-        let owner = w[kCGWindowOwnerName as String] as? String ?? ""
-        let name = w[kCGWindowName as String] as? String ?? ""
-        let id = w[kCGWindowNumber as String] as? Int ?? 0
-        let bounds = w[kCGWindowBounds as String] as? [String: Any] ?? [:]
-        let layer = w[kCGWindowLayer as String] as? Int ?? 0
-        let h = bounds["Height"] as? Double ?? 0
-        let w_val = bounds["Width"] as? Double ?? 0
-
-        if layer == 0 && (owner.contains("WeChat") || owner.contains("微信")) {
-            candidates.append([
-                "owner": owner,
-                "name": name,
-                "id": id,
-                "x": bounds["X"] as? Double ?? 0,
-                "y": bounds["Y"] as? Double ?? 0,
-                "width": w_val,
-                "height": h,
-                "aspectRatio": w_val > 0 ? (h / w_val) : 0
-            ])
-        }
-    }
-    let data = try! JSONSerialization.data(withJSONObject: candidates)
-    print(String(data: data, encoding: .utf8)!)
-    """
-
-    res = subprocess.run(["swift", "-"], input=swift_script, text=True, capture_output=True)
-    if res.returncode != 0 or not res.stdout.strip():
-        return []
-
-    try:
-        return json.loads(res.stdout.strip())
-    except Exception:
-        return []
+    bin_path = ensure_find_windows_binary()
+    if bin_path.exists():
+        res = subprocess.run([str(bin_path)], capture_output=True, text=True)
+        if res.returncode == 0 and res.stdout.strip():
+            try:
+                return json.loads(res.stdout.strip())
+            except Exception:
+                pass
+    return []
 
 
 def detect_game_window() -> Optional[Dict[str, Any]]:
@@ -112,26 +89,17 @@ def detect_game_window() -> Optional[Dict[str, Any]]:
     return windows[0]
 
 
-def activate_wechat_window() -> None:
-    """Brings WeChat to the front to ensure no other window occludes the game view."""
-    try:
-        subprocess.run(
-            ["osascript", "-e", 'tell application "System Events" to set frontmost of process "WeChat" to true'],
-            capture_output=True,
-            timeout=2.0,
-        )
-        time.sleep(0.25)
-    except Exception:
-        pass
-
-
 def capture_window_rect(x: int, y: int, width: int, height: int, output_path: str = "/tmp/hud_game_capture.png") -> str:
-    """Captures a specific screen rectangle using macOS screencapture after activating WeChat."""
-    activate_wechat_window()
-    cmd = ["screencapture", "-x", f"-R{x},{y},{width},{height}", output_path]
+    """Captures a specific screen rectangle at high speed via native CoreGraphics."""
+    bin_path = ensure_find_windows_binary()
+    cmd = [str(bin_path), "--capture", str(x), str(y), str(width), str(height), output_path]
     res = subprocess.run(cmd, capture_output=True)
     if res.returncode != 0 or not os.path.exists(output_path):
-        raise RuntimeError(f"屏幕截取失败: {res.stderr.decode('utf-8', errors='ignore')}")
+        # Fallback to screencapture if needed
+        cmd_fallback = ["screencapture", "-x", f"-R{x},{y},{width},{height}", output_path]
+        subprocess.run(cmd_fallback, capture_output=True)
+    if not os.path.exists(output_path):
+        raise RuntimeError(f"屏幕截取失败: 无法生成截图文件 {output_path}")
     return output_path
 
 

@@ -48,10 +48,10 @@ def detect_viewports(image: np.ndarray, split_mode: str = "auto") -> Tuple[Tuple
 
             sorted_diffs = np.sort(row_diffs)
             base_diff = np.median(sorted_diffs[:int(valid_h * 0.4)])
-            threshold = max(25.0, base_diff * 4.0)
+            threshold = min(35.0, max(18.0, base_diff * 2.2))
 
             is_panel = (row_diffs < threshold).astype(np.uint8)
-            k = np.ones((max(20, int(valid_h * 0.08)), 1), dtype=np.uint8)
+            k = np.ones((15, 1), dtype=np.uint8)
             closed = cv2.morphologyEx(is_panel, cv2.MORPH_CLOSE, k).flatten()
 
             nz = np.where(closed > 0)[0]
@@ -202,6 +202,10 @@ def merge_overlapping_circles(
                         new_cy = int(round((p1y + p2y) / 2))
                         new_r = int(round(np.hypot(p2x - p1x, p2y - p1y) / 2))
 
+                    # Prevent merging into an unnatural giant circle spanning across unrelated regions
+                    if new_r > 75 and merged.radius <= 60 and m2.radius <= 60:
+                        continue
+
                     merged = DifferenceMark(
                         id=0,
                         center_x=new_cx,
@@ -261,8 +265,11 @@ def detect_differences(
     blurred_ref = cv2.GaussianBlur(gray_ref, (ksize, ksize), 0)
     blurred_tgt = cv2.GaussianBlur(gray_tgt, (ksize, ksize), 0)
 
-    # Absolute Difference
-    diff = cv2.absdiff(blurred_ref, blurred_tgt)
+    # Shift-tolerant difference (tolerates 1-2 pixel micro-jitter / subpixel rendering shifts)
+    tol_k = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    diff_ref = np.maximum(0, blurred_ref.astype(np.int16) - cv2.dilate(blurred_tgt, tol_k).astype(np.int16))
+    diff_tgt = np.maximum(0, blurred_tgt.astype(np.int16) - cv2.dilate(blurred_ref, tol_k).astype(np.int16))
+    diff = np.maximum(diff_ref, diff_tgt).astype(np.uint8)
 
     # Exclude border seam if specified
     if border_margin > 0 and panel_h > border_margin * 2 and panel_w > border_margin * 2:
@@ -271,6 +278,10 @@ def detect_differences(
         diff_inner = diff
         border_margin = 0
 
+    # Guard: if panels have massive global difference (e.g. menu, ad, or game-over screen), reject false positives
+    if float(np.mean(diff_inner)) > 30.0:
+        return []
+
     # Binary Threshold
     _, thresh = cv2.threshold(diff_inner, diff_threshold, 255, cv2.THRESH_BINARY)
 
@@ -278,14 +289,13 @@ def detect_differences(
     open_k = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     opened = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, open_k)
 
-    # Morphological Close (connect fragments adaptively based on resolution)
-    close_kernel_size = 15 if max(panel_h, panel_w) > 600 else 7
+    # Morphological Close
+    close_kernel_size = 7 if max(panel_h, panel_w) > 600 else 5
     close_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_kernel_size, close_kernel_size))
     closed = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, close_k)
-    dilated = cv2.dilate(closed, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1)
 
     # Find contours
-    contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     raw_marks: List[DifferenceMark] = []
     for cnt in contours:
@@ -294,6 +304,9 @@ def detect_differences(
             continue
 
         (cx, cy), radius = cv2.minEnclosingCircle(cnt)
+        max_r_allowed = int(min(panel_h, panel_w) * 0.22)
+        if radius > max_r_allowed:
+            continue
         padded_radius = max(int(radius) + 6, 12)
 
         actual_cx = int(cx + border_margin)

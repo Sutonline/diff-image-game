@@ -5,3 +5,4 @@ __pycache__/
 .pytest_cache/
 .DS_Store
 diff_game/overlay_bin
+diff_game/find_windows
