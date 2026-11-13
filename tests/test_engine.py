@@ -149,3 +149,19 @@ def test_spot_difference_on_real_mobile_screenshot():
 
     # Verify both panels were annotated
     assert annotated.shape == img.shape
+
+
+def test_compare_game_sheet_max_differences_limit():
+    from pathlib import Path
+    from diff_game.engine import compare_game_sheet
+
+    demo_img_path = Path(__file__).parent.parent / "assets" / "demo_original.jpg"
+    if not demo_img_path.exists():
+        pytest.skip("Repository demo fixture assets/demo_original.jpg not found")
+
+    img = cv2.imread(str(demo_img_path))
+    result, _ = compare_game_sheet(img, max_differences=10)
+    assert result.difference_count == 10
+    assert len(result.differences) == 10
+    # Verified IDs are sequential 1..10
+    assert [d.id for d in result.differences] == list(range(1, 11))

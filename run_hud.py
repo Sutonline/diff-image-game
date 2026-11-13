@@ -27,14 +27,20 @@ def main():
     parser.add_argument(
         "--threshold",
         type=int,
-        default=18,
-        help="色差敏感度阈值（默认 18）",
+        default=24,
+        help="色差敏感度阈值（默认 24）",
     )
     parser.add_argument(
         "--min-area",
         type=int,
-        default=50,
-        help="最小连通面积过滤噪点（默认 50 px²）",
+        default=100,
+        help="最小连通面积过滤噪点（默认 100 px²）",
+    )
+    parser.add_argument(
+        "--max-marks",
+        type=int,
+        default=10,
+        help="差异数量上限（默认 10 处，按显著度优选 Top-N，设为 0 表示不限制）",
     )
     parser.add_argument(
         "--no-click-through",
@@ -64,28 +70,36 @@ def main():
     print(f"✅ 成功定位目标窗口: [{window.get('name', '微信小程序')}] (尺寸: {int(window['width'])}×{int(window['height'])})")
 
     # 2. First solve
+    curr_max_marks = args.max_marks
     solve_and_display_hud(
         window=window,
         click_through=not args.no_click_through,
         timeout=args.timeout,
         diff_threshold=args.threshold,
         min_area=args.min_area,
+        max_marks=curr_max_marks,
     )
 
     # 3. Interactive loop
     print("\n" + "-" * 60)
     print("🎮 快捷控制：")
-    print("   👉 每次玩新关卡或想看提示时：直接按 [回车] 键即刻刷新并原位圈出！")
+    print("   👉 每次玩新关卡：直接按 [回车] 键即刻刷新并圈出！")
+    print("   👉 切换关卡差异数：直接输入数字 (如 5 或 10) 调整数量上限")
     print("   👉 输入 q 并按回车：退出辅助系统")
     print("-" * 60)
 
     while True:
         try:
-            user_input = input("\n👉 按 [回车] 刷新关卡 (q 退出) > ").strip().lower()
+            limit_str = f"{curr_max_marks} 处" if curr_max_marks > 0 else "不限制"
+            user_input = input(f"\n👉 按 [回车] 刷新关卡 (当前上限: {limit_str}，输入数字调整，q 退出) > ").strip().lower()
             if user_input in ("q", "quit", "exit"):
                 kill_existing_overlays()
                 print("👋 已退出辅助系统，游戏愉快！")
                 break
+
+            if user_input.isdigit():
+                curr_max_marks = int(user_input)
+                print(f"⚙️ 已将显示数量上限切换为: {curr_max_marks if curr_max_marks > 0 else '不限制'}")
 
             # Re-detect window position in case user moved the window
             curr_window = detect_game_window() or window
@@ -95,6 +109,7 @@ def main():
                 timeout=args.timeout,
                 diff_threshold=args.threshold,
                 min_area=args.min_area,
+                max_marks=curr_max_marks,
             )
         except (KeyboardInterrupt, EOFError):
             kill_existing_overlays()

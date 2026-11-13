@@ -426,6 +426,7 @@ def compare_game_sheet(
     diff_threshold: int = 18,
     min_area: int = 50,
     blur_radius: int = 3,
+    max_differences: Optional[int] = None,
 ) -> Tuple[DiffResult, np.ndarray]:
     """
     Main high-level comparison pipeline:
@@ -450,6 +451,13 @@ def compare_game_sheet(
         blur_radius=blur_radius,
         border_margin=border_margin,
     )
+
+    # If maximum differences limit is specified, select top-K most prominent differences by area
+    if max_differences is not None and max_differences > 0 and len(differences) > max_differences:
+        differences = sorted(differences, key=lambda d: d.area, reverse=True)[:max_differences]
+        differences.sort(key=lambda d: (d.center_y, d.center_x))
+        for idx, d in enumerate(differences, 1):
+            d.id = idx
 
     # Populate global coordinates
     rx, ry = ref_offset

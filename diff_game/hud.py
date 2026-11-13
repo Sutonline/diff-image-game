@@ -115,8 +115,9 @@ def solve_and_display_hud(
     window: Dict[str, Any],
     click_through: bool = True,
     timeout: float = 15.0,
-    diff_threshold: int = 18,
-    min_area: int = 50,
+    diff_threshold: int = 24,
+    min_area: int = 100,
+    max_marks: int = 10,
 ) -> int:
     """
     Captures game window, solves spot-the-difference, and displays native overlay.
@@ -149,10 +150,14 @@ def solve_and_display_hud(
         img,
         diff_threshold=diff_threshold,
         min_area=min_area,
+        max_differences=max_marks if max_marks > 0 else None,
     )
 
     diff_count = len(result.differences)
-    print(f"🎯 检出差异: {diff_count} 处 (耗时: {result.execution_time_ms} ms)")
+    if max_marks > 0 and diff_count == max_marks:
+        print(f"🎯 检出差异: {diff_count} 处 (按显著度优选 Top {max_marks}，耗时: {result.execution_time_ms} ms)")
+    else:
+        print(f"🎯 检出差异: {diff_count} 处 (耗时: {result.execution_time_ms} ms)")
 
     if diff_count == 0:
         print("💡 未检出差异（可能处于主菜单/结算界面或无明显色差）")
