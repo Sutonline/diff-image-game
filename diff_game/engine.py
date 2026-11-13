@@ -51,19 +51,43 @@ def detect_viewports(image: np.ndarray, split_mode: str = "auto") -> Tuple[Tuple
             threshold = min(35.0, max(18.0, base_diff * 2.2))
 
             is_panel = (row_diffs < threshold).astype(np.uint8)
-            k = np.ones((15, 1), dtype=np.uint8)
-            closed = cv2.morphologyEx(is_panel, cv2.MORPH_CLOSE, k).flatten()
+            
+            # Simple run-length encoding to identify contiguous panel block:
+            runs = []
+            start = None
+            for y in range(valid_h):
+                if is_panel[y] and start is None:
+                    start = y
+                elif not is_panel[y] and start is not None:
+                    runs.append([start, y - start])
+                    start = None
+            if start is not None:
+                runs.append([start, valid_h - start])
 
-            nz = np.where(closed > 0)[0]
-            if len(nz) > 0:
-                panel_y = int(nz[0])
-                panel_h = min(delta_y, int(nz[-1] - nz[0]))
+            # Bridge internal gaps smaller than 10% of delta_y (e.g. internal game differences)
+            gap_limit = max(40, int(delta_y * 0.10))
+            merged_runs = []
+            for r in runs:
+                if not merged_runs:
+                    merged_runs.append(r)
+                else:
+                    prev_start, prev_len = merged_runs[-1]
+                    gap = r[0] - (prev_start + prev_len)
+                    if gap < gap_limit:
+                        merged_runs[-1][1] = (r[0] + r[1]) - prev_start
+                    else:
+                        merged_runs.append(r)
+
+            if merged_runs:
+                longest_run = max(merged_runs, key=lambda r: r[1])
+                panel_y = longest_run[0]
+                panel_h = min(delta_y, longest_run[1])
             else:
                 panel_y = 0
                 panel_h = delta_y
 
             ref_box = (0, int(panel_y), width, int(panel_h))
-            tgt_box = (0, int(panel_y + delta_y), width, int(delta_y if panel_h >= delta_y else panel_h))
+            tgt_box = (0, int(panel_y + delta_y), width, int(panel_h))
             return ref_box, tgt_box, "vertical"
 
     # 2. Horizontal correlation for wide images
@@ -160,7 +184,7 @@ def split_game_sheet(
 
 
 def merge_overlapping_circles(
-    marks: List[DifferenceMark], buffer_ratio: float = 1.05
+    marks: List[DifferenceMark], buffer_ratio: float = 1.05, max_radius: int = 120
 ) -> List[DifferenceMark]:
     """
     Guarantees that NO difference marks overlap.
@@ -202,8 +226,8 @@ def merge_overlapping_circles(
                         new_cy = int(round((p1y + p2y) / 2))
                         new_r = int(round(np.hypot(p2x - p1x, p2y - p1y) / 2))
 
-                    # Prevent merging into an unnatural giant circle spanning across unrelated regions
-                    if new_r > 75 and merged.radius <= 60 and m2.radius <= 60:
+                    # Hard ceiling: prevent merging into an unnatural giant circle spanning across unrelated regions
+                    if new_r > max_radius:
                         continue
 
                     merged = DifferenceMark(
@@ -265,6 +289,18 @@ def detect_differences(
     blurred_ref = cv2.GaussianBlur(gray_ref, (ksize, ksize), 0)
     blurred_tgt = cv2.GaussianBlur(gray_tgt, (ksize, ksize), 0)
 
+    # Subpixel global alignment (absorbs 1-3px micro-shift between mini program panels)
+    if panel_h > 100 and panel_w > 100:
+        shift, _ = cv2.phaseCorrelate(
+            np.float32(blurred_ref[int(panel_h * 0.1):int(panel_h * 0.9), int(panel_w * 0.1):int(panel_w * 0.9)]),
+            np.float32(blurred_tgt[int(panel_h * 0.1):int(panel_h * 0.9), int(panel_w * 0.1):int(panel_w * 0.9)]),
+        )
+        dx = int(round(shift[0]))
+        dy = int(round(shift[1]))
+        if abs(dx) <= 5 and abs(dy) <= 5 and (dx != 0 or dy != 0):
+            M = np.float32([[1, 0, dx], [0, 1, dy]])
+            blurred_tgt = cv2.warpAffine(blurred_tgt, M, (panel_w, panel_h))
+
     # Shift-tolerant difference (tolerates 1-2 pixel micro-jitter / subpixel rendering shifts)
     tol_k = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
     diff_ref = np.maximum(0, blurred_ref.astype(np.int16) - cv2.dilate(blurred_tgt, tol_k).astype(np.int16))
@@ -304,10 +340,13 @@ def detect_differences(
             continue
 
         (cx, cy), radius = cv2.minEnclosingCircle(cnt)
-        max_r_allowed = int(min(panel_h, panel_w) * 0.22)
+        max_r_allowed = int(min(panel_h, panel_w) * 0.15)
         if radius > max_r_allowed:
             continue
-        padded_radius = max(int(radius) + 6, 12)
+        # Reject thin wire/seam noise (solidity check)
+        if radius > 18 and (area / (np.pi * radius * radius)) < 0.10:
+            continue
+        padded_radius = max(int(radius) + 3, 12)
 
         actual_cx = int(cx + border_margin)
         actual_cy = int(cy + border_margin)
@@ -328,8 +367,9 @@ def detect_differences(
             )
         )
 
-    # Apply strict non-overlapping merge to guarantee red circles do not overlap
-    return merge_overlapping_circles(raw_marks, buffer_ratio=1.0)
+    # Apply strict non-overlapping merge with adaptive radius ceiling to guarantee clean, accurate circles
+    max_merge_r = max(60, int(min(panel_h, panel_w) * 0.20))
+    return merge_overlapping_circles(raw_marks, buffer_ratio=1.0, max_radius=max_merge_r)
 
 
 def annotate_game_sheet(

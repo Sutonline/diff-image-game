@@ -37,7 +37,8 @@ class OverlayCanvasView: NSView {
         let scale = config.scale > 0 ? config.scale : 1.0
 
         for mark in config.differences {
-            let r = (mark.radius / scale) + 6.0
+            // Strictly bound circle radius to prevent visual obstruction
+            let r = max(10.0, min(28.0, mark.radius / scale))
 
             // Draw on reference panel if available
             if let rx = mark.refX, let ry = mark.refY {

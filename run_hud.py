@@ -6,7 +6,12 @@ Spot The Difference - WeChat Mini Program In-Place Transparent HUD Runner.
 
 import sys
 import argparse
-from diff_game.hud import detect_game_window, solve_and_display_hud, list_wechat_windows
+from diff_game.hud import (
+    detect_game_window,
+    solve_and_display_hud,
+    list_wechat_windows,
+    kill_existing_overlays,
+)
 
 
 def main():
@@ -78,6 +83,7 @@ def main():
         try:
             user_input = input("\n👉 按 [回车] 刷新关卡 (q 退出) > ").strip().lower()
             if user_input in ("q", "quit", "exit"):
+                kill_existing_overlays()
                 print("👋 已退出辅助系统，游戏愉快！")
                 break
 
@@ -91,6 +97,7 @@ def main():
                 min_area=args.min_area,
             )
         except (KeyboardInterrupt, EOFError):
+            kill_existing_overlays()
             print("\n👋 已退出辅助系统。")
             break
 

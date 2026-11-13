@@ -103,6 +103,14 @@ def capture_window_rect(x: int, y: int, width: int, height: int, output_path: st
     return output_path
 
 
+def kill_existing_overlays() -> None:
+    """Kills any active overlay_bin processes to avoid zombie or duplicate floating windows."""
+    try:
+        subprocess.run(["killall", "overlay_bin"], capture_output=True)
+    except Exception:
+        pass
+
+
 def solve_and_display_hud(
     window: Dict[str, Any],
     click_through: bool = True,
@@ -114,6 +122,9 @@ def solve_and_display_hud(
     Captures game window, solves spot-the-difference, and displays native overlay.
     Returns the number of detected differences.
     """
+    # Always kill previous overlay window before capturing to prevent capturing old overlay marks
+    kill_existing_overlays()
+
     bin_path = ensure_overlay_binary()
 
     x = int(window["x"])
