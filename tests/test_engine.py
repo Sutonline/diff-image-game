@@ -129,15 +129,15 @@ def test_spot_difference_on_real_mobile_screenshot():
     from pathlib import Path
     from diff_game.engine import compare_game_sheet
 
-    test_img_path = Path.home() / "Downloads" / "test.jpg"
-    if not test_img_path.exists():
-        pytest.skip("Local fixture ~/Downloads/test.jpg not found")
+    demo_img_path = Path(__file__).parent.parent / "assets" / "demo_original.jpg"
+    if not demo_img_path.exists():
+        pytest.skip("Repository demo fixture assets/demo_original.jpg not found")
 
-    img = cv2.imread(str(test_img_path))
+    img = cv2.imread(str(demo_img_path))
     result, annotated = compare_game_sheet(img)
-    # Detects all 15 non-overlapping differences on mobile screenshot fixture
-    assert result.difference_count == 15
-    assert len(result.differences) == 15
+    # Detects 21 non-overlapping differences on test2 demo screenshot
+    assert result.difference_count == 21
+    assert len(result.differences) == 21
 
     # Strict non-overlapping rule: no two circles can overlap
     for i in range(len(result.differences)):
