@@ -454,21 +454,34 @@ def compare_game_sheet(
     min_area: int = 50,
     blur_radius: int = 3,
     max_differences: Optional[int] = None,
+    custom_boxes: Optional[Tuple[Tuple[int, int, int, int], Tuple[int, int, int, int]]] = None,
 ) -> Tuple[DiffResult, np.ndarray]:
     """
     Main high-level comparison pipeline:
-    1. Detects panel viewports (auto-crops status bars if screenshot).
+    1. Detects panel viewports (or uses custom calibrated boxes).
     2. Compares panels with adaptive morphology and NMS.
     3. Annotates symmetric difference marks.
     """
     start_time = time.perf_counter()
 
-    ref_panel, tgt_panel, effective_mode, ref_offset, tgt_offset = split_game_sheet(
-        image, split_mode=split_mode, return_offsets=True
-    )
-
-    # If mobile screenshot viewport is detected (offset > 50px), ignore outer 20px frame border
-    border_margin = 20 if (ref_offset[1] > 50 or ref_offset[0] > 50) else 0
+    if custom_boxes is not None:
+        (rx, ry, rw, rh), (tx, ty, tw, th) = custom_boxes
+        ref_panel = image[ry : ry + rh, rx : rx + rw].copy()
+        tgt_panel = image[ty : ty + th, tx : tx + tw].copy()
+        min_h = min(ref_panel.shape[0], tgt_panel.shape[0])
+        min_w = min(ref_panel.shape[1], tgt_panel.shape[1])
+        ref_panel = ref_panel[:min_h, :min_w]
+        tgt_panel = tgt_panel[:min_h, :min_w]
+        ref_offset = (rx, ry)
+        tgt_offset = (tx, ty)
+        effective_mode = "custom"
+        border_margin = 0
+    else:
+        ref_panel, tgt_panel, effective_mode, ref_offset, tgt_offset = split_game_sheet(
+            image, split_mode=split_mode, return_offsets=True
+        )
+        # If mobile screenshot viewport is detected (offset > 50px), ignore outer 20px frame border
+        border_margin = 20 if (ref_offset[1] > 50 or ref_offset[0] > 50) else 0
 
     differences = detect_differences(
         ref_panel=ref_panel,

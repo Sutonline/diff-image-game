@@ -17,6 +17,12 @@ import cv2
 import numpy as np
 
 from diff_game.engine import compare_game_sheet
+from diff_game.config import (
+    load_viewport_config,
+    save_viewport_config,
+    clear_viewport_config,
+    get_viewport_config_path,
+)
 
 OVERLAY_SWIFT_SOURCE = Path(__file__).parent / "overlay.swift"
 OVERLAY_BIN_PATH = Path(__file__).parent / "overlay_bin"
@@ -145,12 +151,24 @@ def solve_and_display_hud(
     # Retina displays produce 2x image pixels relative to screen points
     scale_factor = img_w / float(width) if width > 0 else 1.0
 
+    calib = load_viewport_config()
+    custom_boxes = None
+    if calib:
+        ref_b = calib["refBox"]
+        tgt_b = calib["tgtBox"]
+        custom_boxes = (
+            (int(ref_b["x"]), int(ref_b["y"]), int(ref_b["width"]), int(ref_b["height"])),
+            (int(tgt_b["x"]), int(tgt_b["y"]), int(tgt_b["width"]), int(tgt_b["height"])),
+        )
+        print("📐 已应用用户自定义红框校准配置 (无需重新识别，永久复用)")
+
     print(f"⚡ OpenCV 算法比对中 (画面像素: {img_w}×{img_h}, Retina倍率: {scale_factor:.1f}x)...")
     result, _ = compare_game_sheet(
         img,
         diff_threshold=diff_threshold,
         min_area=min_area,
         max_differences=max_marks if max_marks > 0 else None,
+        custom_boxes=custom_boxes,
     )
 
     diff_count = len(result.differences)
@@ -212,3 +230,88 @@ def solve_and_display_hud(
     # Run native overlay
     subprocess.Popen([str(bin_path), config_path])
     return diff_count
+
+
+def launch_calibration_hud(window: Dict[str, Any]) -> bool:
+    """
+    Launches interactive calibration mode allowing user to drag and resize
+    the red boxes on the live game window.
+    Saves the calibrated coordinates persistently so they can be reused.
+    """
+    kill_existing_overlays()
+    bin_path = ensure_overlay_binary()
+
+    x = int(window["x"])
+    y = int(window["y"])
+    width = int(window["width"])
+    height = int(window["height"])
+
+    capture_path = "/tmp/hud_game_capture.png"
+    capture_window_rect(x, y, width, height, capture_path)
+    img = cv2.imread(capture_path)
+    img_h, img_w = img.shape[:2] if img is not None else (height * 2, width * 2)
+    scale_factor = img_w / float(width) if width > 0 else 1.0
+
+    # Initial box coordinates from saved config or intelligent fallback
+    calib = load_viewport_config()
+    if calib:
+        ref_box_dict = calib["refBox"]
+        tgt_box_dict = calib["tgtBox"]
+    else:
+        ref_box_dict = {
+            "x": 32.0,
+            "y": float(img_h * 0.22),
+            "width": float(img_w - 64.0),
+            "height": float(img_h * 0.25),
+        }
+        tgt_box_dict = {
+            "x": 32.0,
+            "y": float(img_h * 0.54),
+            "width": float(img_w - 64.0),
+            "height": float(img_h * 0.25),
+        }
+
+    save_path = str(get_viewport_config_path())
+    config_data = {
+        "bounds": {
+            "x": float(x),
+            "y": float(y),
+            "width": float(width),
+            "height": float(height),
+        },
+        "scale": float(scale_factor),
+        "clickThrough": False,
+        "timeout": 0.0,
+        "differenceCount": 0,
+        "differences": [],
+        "refBox": ref_box_dict,
+        "tgtBox": tgt_box_dict,
+        "mode": "calibrate",
+        "savePath": save_path,
+    }
+
+    config_path = "/tmp/hud_calibration_config.json"
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(config_data, f, ensure_ascii=False, indent=2)
+
+    print("\n" + "=" * 60)
+    print("🎯 已启动【红框交互拖拽与缩放校准模式】！")
+    print("   👉 拖拽移动：鼠标按住红框内部，直接拖动到画面位置")
+    print("   👉 调整大小：按住红框右下角 [⇲] 拖拽即可同时缩放尺寸")
+    print("   👉 保存设置：在弹出的窗口内按 [回车键 (Enter)] 即可永久保存！")
+    print("   👉 取消退出：按 [ESC] 退出校准")
+    print("=" * 60)
+
+    # Run native overlay synchronously and wait for user to finish
+    subprocess.run([str(bin_path), config_path])
+
+    updated = load_viewport_config()
+    if updated:
+        ref_b = updated["refBox"]
+        tgt_b = updated["tgtBox"]
+        print(f"✅ 恭喜！红框校准已成功保存 (图1: {ref_b['width']:.0f}×{ref_b['height']:.0f} at {ref_b['x']:.0f},{ref_b['y']:.0f})！")
+        print(f"   👉 配置文件保存在: {save_path}，后续所有关卡将直接生效复用。")
+        return True
+    else:
+        print("ℹ️ 已取消校准，保持原有设置。")
+        return False
