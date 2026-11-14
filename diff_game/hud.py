@@ -117,7 +117,7 @@ def solve_and_display_hud(
     timeout: float = 15.0,
     diff_threshold: int = 24,
     min_area: int = 100,
-    max_marks: int = 10,
+    max_marks: int = 0,
 ) -> int:
     """
     Captures game window, solves spot-the-difference, and displays native overlay.
@@ -188,6 +188,18 @@ def solve_and_display_hud(
         "timeout": float(timeout),
         "differenceCount": diff_count,
         "differences": marks_data,
+        "refBox": {
+            "x": float(result.ref_box[0]),
+            "y": float(result.ref_box[1]),
+            "width": float(result.ref_box[2]),
+            "height": float(result.ref_box[3]),
+        } if result.ref_box else None,
+        "tgtBox": {
+            "x": float(result.tgt_box[0]),
+            "y": float(result.tgt_box[1]),
+            "width": float(result.tgt_box[2]),
+            "height": float(result.tgt_box[3]),
+        } if result.tgt_box else None,
     }
 
     config_path = "/tmp/hud_overlay_config.json"

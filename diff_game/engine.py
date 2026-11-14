@@ -18,32 +18,37 @@ def detect_viewports(image: np.ndarray, split_mode: str = "auto") -> Tuple[Tuple
     if split_mode in ("auto", "vertical") and height > width * 1.1:
         best_val = -1.0
         best_delta_y = 0
+        best_delta_x = 0
 
-        # Scan candidate template heights and positions
-        for ty_ratio in [0.08, 0.15, 0.22, 0.30]:
+        # Scan candidate template heights and positions with 2D search (allows ±x micro-shift alignment)
+        margin_x = int(width * 0.12)
+        search_margin_x = int(width * 0.06)
+        tpl_w = width - 2 * margin_x
+
+        for ty_ratio in [0.15, 0.22, 0.30]:
             tpl_y = int(height * ty_ratio)
             tpl_h = max(30, int(height * 0.12))
-            crop_x = int(width * 0.1)
-            tpl = gray[tpl_y:tpl_y + tpl_h, crop_x:width - crop_x]
-            search_area = gray[int(height * 0.38):, crop_x:width - crop_x]
+            tpl = gray[tpl_y:tpl_y + tpl_h, margin_x:margin_x + tpl_w]
+            search_area = gray[int(height * 0.35):, search_margin_x:width - search_margin_x]
 
             res = cv2.matchTemplate(search_area, tpl, cv2.TM_CCOEFF_NORMED)
             _, max_val, _, max_loc = cv2.minMaxLoc(res)
 
             if max_val > best_val:
                 best_val = max_val
-                best_delta_y = int(height * 0.38) + max_loc[1] - tpl_y
+                best_delta_y = int(height * 0.35) + max_loc[1] - tpl_y
+                best_delta_x = search_margin_x + max_loc[0] - margin_x
 
         if best_val > 0.65 and best_delta_y > height * 0.3:
             delta_y = best_delta_y
+            delta_x = best_delta_x
 
             # Determine active panel bounds via row-by-row consistency between panels
             valid_h = height - delta_y
-            margin_x = int(width * 0.08)
             row_diffs = np.zeros(valid_h, dtype=np.float32)
             for y in range(valid_h):
                 r1 = gray[y, margin_x:width - margin_x].astype(np.float32)
-                r2 = gray[y + delta_y, margin_x:width - margin_x].astype(np.float32)
+                r2 = gray[y + delta_y, margin_x + delta_x:width - margin_x + delta_x].astype(np.float32)
                 row_diffs[y] = np.mean(np.abs(r1 - r2))
 
             sorted_diffs = np.sort(row_diffs)
@@ -86,8 +91,20 @@ def detect_viewports(image: np.ndarray, split_mode: str = "auto") -> Tuple[Tuple
                 panel_y = 0
                 panel_h = delta_y
 
-            ref_box = (0, int(panel_y), width, int(panel_h))
-            tgt_box = (0, int(panel_y + delta_y), width, int(panel_h))
+            # Detect left/right solid borders (letterboxing or window chrome)
+            sample_ref = gray[panel_y:panel_y + panel_h, :]
+            col_stds = np.std(sample_ref, axis=0)
+            left_x = 0
+            while left_x < int(width * 0.15) and col_stds[left_x] < 3.0:
+                left_x += 1
+            right_x = width
+            while right_x > int(width * 0.85) and col_stds[right_x - 1] < 3.0:
+                right_x -= 1
+            panel_x = left_x
+            panel_w = max(width // 2, right_x - left_x)
+
+            ref_box = (int(panel_x), int(panel_y), int(panel_w), int(panel_h))
+            tgt_box = (int(panel_x + delta_x), int(panel_y + delta_y), int(panel_w), int(panel_h))
             return ref_box, tgt_box, "vertical"
 
     # 2. Horizontal correlation for wide images
@@ -470,6 +487,8 @@ def compare_game_sheet(
         difference_count=len(differences),
         differences=differences,
         execution_time_ms=round(duration_ms, 2),
+        ref_box=(rx, ry, ref_panel.shape[1], ref_panel.shape[0]),
+        tgt_box=(tx, ty, tgt_panel.shape[1], tgt_panel.shape[0]),
     )
 
     return result, annotated_image

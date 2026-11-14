@@ -20,3 +20,5 @@ class DiffResult(BaseModel):
     difference_count: int
     differences: List[DifferenceMark]
     execution_time_ms: float
+    ref_box: Optional[Tuple[int, int, int, int]] = None
+    tgt_box: Optional[Tuple[int, int, int, int]] = None

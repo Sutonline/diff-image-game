@@ -17,6 +17,13 @@ struct WindowBounds: Codable {
     let height: Double
 }
 
+struct PanelBox: Codable {
+    let x: Double
+    let y: Double
+    let width: Double
+    let height: Double
+}
+
 struct OverlayConfig: Codable {
     let bounds: WindowBounds
     let scale: Double
@@ -24,6 +31,8 @@ struct OverlayConfig: Codable {
     let timeout: Double
     let differenceCount: Int
     let differences: [DifferenceMark]
+    let refBox: PanelBox?
+    let tgtBox: PanelBox?
 }
 
 class OverlayCanvasView: NSView {
@@ -36,6 +45,30 @@ class OverlayCanvasView: NSView {
 
         let scale = config.scale > 0 ? config.scale : 1.0
 
+        // 1. Draw panel bounding boxes if available (answers user request to visualize viewport alignment)
+        let redColor = NSColor(red: 0.95, green: 0.20, blue: 0.20, alpha: 0.85)
+        if let ref = config.refBox {
+            drawPanelBoundary(
+                x: ref.x / scale,
+                y: ref.y / scale,
+                w: ref.width / scale,
+                h: ref.height / scale,
+                label: "图 1 (参考区域)",
+                color: redColor
+            )
+        }
+        if let tgt = config.tgtBox {
+            drawPanelBoundary(
+                x: tgt.x / scale,
+                y: tgt.y / scale,
+                w: tgt.width / scale,
+                h: tgt.height / scale,
+                label: "图 2 (比对区域)",
+                color: redColor
+            )
+        }
+
+        // 2. Draw difference marks
         for mark in config.differences {
             // Strictly bound circle radius to prevent visual obstruction (compact 12-22pt rings)
             let r = max(12.0, min(22.0, mark.radius / scale))
@@ -50,6 +83,46 @@ class OverlayCanvasView: NSView {
                 drawCircleBadge(x: tx / scale, y: ty / scale, r: r, id: mark.id)
             }
         }
+    }
+
+    private func drawPanelBoundary(x: Double, y: Double, w: Double, h: Double, label: String, color: NSColor) {
+        let rect = NSRect(x: x, y: y, width: w, height: h)
+        let borderPath = NSBezierPath(roundedRect: rect, xRadius: 4, yRadius: 4)
+
+        // Subtle fill tint to indicate active area
+        color.withAlphaComponent(0.04).setFill()
+        borderPath.fill()
+
+        // Outer glow
+        color.withAlphaComponent(0.25).setStroke()
+        borderPath.lineWidth = 3.5
+        borderPath.stroke()
+
+        // Main border line
+        color.setStroke()
+        borderPath.lineWidth = 1.8
+        borderPath.stroke()
+
+        // Corner badge pill
+        let font = NSFont.boldSystemFont(ofSize: 10)
+        let textAttrs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: NSColor.white
+        ]
+        let textSize = (label as NSString).size(withAttributes: textAttrs)
+        let pillW = textSize.width + 12.0
+        let pillH = 17.0
+        let pillRect = NSRect(x: x + 6.0, y: y + 4.0, width: pillW, height: pillH)
+
+        let pillPath = NSBezierPath(roundedRect: pillRect, xRadius: 4, yRadius: 4)
+        color.withAlphaComponent(0.90).setFill()
+        pillPath.fill()
+
+        let textPoint = NSPoint(
+            x: pillRect.origin.x + 6.0,
+            y: pillRect.origin.y + (pillH - textSize.height) / 2.0 - 0.5
+        )
+        (label as NSString).draw(at: textPoint, withAttributes: textAttrs)
     }
 
     private func drawCircleBadge(x: Double, y: Double, r: Double, id: Int) {

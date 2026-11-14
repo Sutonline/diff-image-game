@@ -39,8 +39,8 @@ def main():
     parser.add_argument(
         "--max-marks",
         type=int,
-        default=10,
-        help="差异数量上限（默认 10 处，按显著度优选 Top-N，设为 0 表示不限制）",
+        default=0,
+        help="差异数量上限（默认 0 表示全量自动检出，不人为截断）",
     )
     parser.add_argument(
         "--no-click-through",
@@ -83,23 +83,17 @@ def main():
     # 3. Interactive loop
     print("\n" + "-" * 60)
     print("🎮 快捷控制：")
-    print("   👉 每次玩新关卡：直接按 [回车] 键即刻刷新并圈出！")
-    print("   👉 切换关卡差异数：直接输入数字 (如 5 或 10) 调整数量上限")
+    print("   👉 每次玩新关卡：直接按 [回车] 键即刻自动重新识别并圈出！")
     print("   👉 输入 q 并按回车：退出辅助系统")
     print("-" * 60)
 
     while True:
         try:
-            limit_str = f"{curr_max_marks} 处" if curr_max_marks > 0 else "不限制"
-            user_input = input(f"\n👉 按 [回车] 刷新关卡 (当前上限: {limit_str}，输入数字调整，q 退出) > ").strip().lower()
+            user_input = input("\n👉 按 [回车] 自动识别下一关 (q 退出) > ").strip().lower()
             if user_input in ("q", "quit", "exit"):
                 kill_existing_overlays()
                 print("👋 已退出辅助系统，游戏愉快！")
                 break
-
-            if user_input.isdigit():
-                curr_max_marks = int(user_input)
-                print(f"⚙️ 已将显示数量上限切换为: {curr_max_marks if curr_max_marks > 0 else '不限制'}")
 
             # Re-detect window position in case user moved the window
             curr_window = detect_game_window() or window
