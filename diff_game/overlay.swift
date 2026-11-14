@@ -306,9 +306,6 @@ class OverlayCanvasView: NSView {
             let newH = max(60, min(bounds.height - refRect.origin.y, initialDragRect.height + dy))
             refRect.size.width = newW
             refRect.size.height = newH
-            // Automatically keep target panel size identical
-            tgtRect.size.width = newW
-            tgtRect.size.height = newH
             needsDisplay = true
 
         case .resizeTgt:
@@ -316,8 +313,6 @@ class OverlayCanvasView: NSView {
             let newH = max(60, min(bounds.height - tgtRect.origin.y, initialDragRect.height + dy))
             tgtRect.size.width = newW
             tgtRect.size.height = newH
-            refRect.size.width = newW
-            refRect.size.height = newH
             needsDisplay = true
 
         case .none:

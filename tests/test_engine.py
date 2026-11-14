@@ -182,3 +182,40 @@ def test_compare_game_sheet_invalid_custom_boxes():
     assert result.difference_count == 0
     assert result.differences == []
 
+
+def test_detect_matching_frame_bodies_demo():
+    from pathlib import Path
+    from diff_game.engine import detect_matching_frame_bodies
+
+    demo_img_path = Path(__file__).parent.parent / "assets" / "demo_original.jpg"
+    if not demo_img_path.exists():
+        pytest.skip("Fixture assets/demo_original.jpg not found")
+
+    img = cv2.imread(str(demo_img_path))
+    match = detect_matching_frame_bodies(img)
+    assert match is not None
+    ref_b, tgt_b, mode = match
+    assert mode == "vertical"
+    # Ensure reasonable dimensions for demo fixtures
+    assert ref_b[2] > 1000
+    assert tgt_b[2] > 1000
+    assert abs(ref_b[2] - tgt_b[2]) < 50
+    assert tgt_b[1] > ref_b[1] + ref_b[3] * 0.7
+
+
+def test_align_panels_content_different_widths():
+    from diff_game.engine import align_panels_content
+
+    # Create synthetic panel with width 300 and target panel with width 290 (10px difference)
+    ref = np.ones((200, 300, 3), dtype=np.uint8) * 100
+    tgt = np.ones((200, 290, 3), dtype=np.uint8) * 100
+
+    # Draw identical pattern in center of both
+    cv2.rectangle(ref, (100, 50), (180, 150), (255, 0, 0), -1)
+    cv2.rectangle(tgt, (95, 50), (175, 150), (255, 0, 0), -1)
+
+    aligned_ref, aligned_tgt, ref_offset, tgt_offset = align_panels_content(ref, tgt)
+    assert aligned_ref.shape == aligned_tgt.shape
+    assert aligned_ref.shape[1] > 250
+
+

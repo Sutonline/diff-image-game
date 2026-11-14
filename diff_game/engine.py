@@ -5,6 +5,213 @@ import numpy as np
 from diff_game.models import DifferenceMark, DiffResult
 
 
+def detect_matching_frame_bodies(
+    image: np.ndarray, split_mode: str = "auto"
+) -> Optional[Tuple[Tuple[int, int, int, int], Tuple[int, int, int, int], str]]:
+    """
+    Automatic frame body segmentation:
+    Finds prominent rectangular frames/card boundaries in the image that are
+    roughly consistent ('大概一致') in geometry and highly correlated in visual content.
+    Returns: (ref_box, tgt_box, layout_mode) or None if no matching frame pair is found.
+    Allows independent widths, heights, and offsets for the top and bottom panels.
+    """
+    h, w = image.shape[:2]
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 and image.shape[2] == 3 else image.copy()
+
+    candidate_boxes = []
+
+    # 1. Horizontal boundary line detection via morphological line filter
+    h_len = max(30, int(w * 0.25))
+    h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (h_len, 1))
+    gy = np.abs(cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3))
+    h_lines = cv2.morphologyEx((gy > 25).astype(np.uint8) * 255, cv2.MORPH_OPEN, h_kernel)
+
+    row_sums = np.sum(h_lines > 0, axis=1)
+    line_rows = []
+    for y in range(h):
+        if row_sums[y] > w * 0.22:
+            if not line_rows or (y - line_rows[-1][-1]) > 6:
+                line_rows.append([y])
+            else:
+                line_rows[-1].append(y)
+
+    peak_y = [int(np.mean(cluster)) for cluster in line_rows]
+
+    for i in range(len(peak_y)):
+        for j in range(i + 1, len(peak_y)):
+            box_h = peak_y[j] - peak_y[i]
+            if int(h * 0.12) <= box_h <= int(h * 0.60):
+                band = gray[peak_y[i] : peak_y[j], :]
+                col_std = np.std(band, axis=0)
+                gx = np.abs(cv2.Sobel(band, cv2.CV_32F, 1, 0, ksize=3))
+                col_grad = np.mean(gx, axis=0)
+
+                left_x = 0
+                while left_x < int(w * 0.20) and col_std[left_x] < 3.0:
+                    left_x += 1
+                for x in range(left_x, min(int(w * 0.20), left_x + 35)):
+                    if col_grad[x] > 35:
+                        left_x = x
+                        break
+
+                right_x = w
+                while right_x > int(w * 0.80) and col_std[right_x - 1] < 3.0:
+                    right_x -= 1
+                for x in range(right_x - 1, max(int(w * 0.80), right_x - 35), -1):
+                    if col_grad[x] > 35:
+                        right_x = x + 1
+                        break
+
+                box_w = right_x - left_x
+                if box_w > w * 0.35:
+                    candidate_boxes.append((int(left_x), int(peak_y[i]), int(box_w), int(box_h)))
+
+    # 2. Contour-based candidate boxes
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blurred, 30, 100)
+    k_close = cv2.getStructuringElement(cv2.MORPH_RECT, (13, 13))
+    closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, k_close)
+    contours, _ = cv2.findContours(closed, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    for c in contours:
+        x, y, bw, bh = cv2.boundingRect(c)
+        if bw > w * 0.35 and int(h * 0.12) <= bh <= int(h * 0.60):
+            candidate_boxes.append((int(x), int(y), int(bw), int(bh)))
+
+    # Deduplicate candidate boxes
+    unique = []
+    for b in candidate_boxes:
+        if not any(
+            abs(b[0] - u[0]) < 12 and abs(b[1] - u[1]) < 12 and abs(b[2] - u[2]) < 20 and abs(b[3] - u[3]) < 20
+            for u in unique
+        ):
+            unique.append(b)
+
+    best_pair = None
+    best_score = -1.0
+    layout_mode = "vertical"
+
+    # Evaluate pairs ('大概一致' geometric consistency + visual correlation)
+    for i in range(len(unique)):
+        for j in range(len(unique)):
+            if i == j:
+                continue
+            b1 = unique[i]
+            b2 = unique[j]
+
+            # Vertical pair check
+            if split_mode in ("auto", "vertical") and b2[1] >= b1[1] + b1[3] * 0.75:
+                w_diff = abs(b1[2] - b2[2]) / max(b1[2], b2[2])
+                h_diff = abs(b1[3] - b2[3]) / max(b1[3], b2[3])
+                x_diff = abs(b1[0] - b2[0]) / float(w)
+
+                if w_diff <= 0.18 and h_diff <= 0.18 and x_diff <= 0.15:
+                    p1 = gray[b1[1] : b1[1] + b1[3], b1[0] : b1[0] + b1[2]]
+                    p2 = gray[b2[1] : b2[1] + b2[3], b2[0] : b2[0] + b2[2]]
+                    if p1.size > 0 and p2.size > 0:
+                        r1 = cv2.resize(p1, (96, 96))
+                        r2 = cv2.resize(p2, (96, 96))
+                        res = cv2.matchTemplate(r1, r2, cv2.TM_CCOEFF_NORMED)
+                        corr = float(res[0][0])
+                        geom_score = 1.0 - (w_diff + h_diff) * 0.5
+                        total = corr * 0.75 + geom_score * 0.25
+                        if corr > 0.40 and total > best_score:
+                            best_score = total
+                            best_pair = (b1, b2)
+                            layout_mode = "vertical"
+
+            # Horizontal pair check
+            if split_mode in ("auto", "horizontal") and b2[0] >= b1[0] + b1[2] * 0.75:
+                w_diff = abs(b1[2] - b2[2]) / max(b1[2], b2[2])
+                h_diff = abs(b1[3] - b2[3]) / max(b1[3], b2[3])
+                y_diff = abs(b1[1] - b2[1]) / float(h)
+
+                if w_diff <= 0.18 and h_diff <= 0.18 and y_diff <= 0.15:
+                    p1 = gray[b1[1] : b1[1] + b1[3], b1[0] : b1[0] + b1[2]]
+                    p2 = gray[b2[1] : b2[1] + b2[3], b2[0] : b2[0] + b2[2]]
+                    if p1.size > 0 and p2.size > 0:
+                        r1 = cv2.resize(p1, (96, 96))
+                        r2 = cv2.resize(p2, (96, 96))
+                        res = cv2.matchTemplate(r1, r2, cv2.TM_CCOEFF_NORMED)
+                        corr = float(res[0][0])
+                        geom_score = 1.0 - (w_diff + h_diff) * 0.5
+                        total = corr * 0.75 + geom_score * 0.25
+                        if corr > 0.40 and total > best_score:
+                            best_score = total
+                            best_pair = (b1, b2)
+                            layout_mode = "horizontal"
+
+    if best_pair and best_score >= 0.50:
+        return best_pair[0], best_pair[1], layout_mode
+    return None
+
+
+def align_panels_content(
+    ref: np.ndarray, tgt: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray, Tuple[int, int], Tuple[int, int]]:
+    """
+    Micro-aligns two panels to absorb slight border width differences, asymmetrical padding,
+    or 1-5 pixel translation jitter between panels without stretching.
+    Returns: (aligned_ref, aligned_tgt, (ref_sub_x, ref_sub_y), (tgt_sub_x, tgt_sub_y))
+    """
+    if ref is None or tgt is None or ref.size == 0 or tgt.size == 0:
+        return ref, tgt, (0, 0), (0, 0)
+
+    rh, rw = ref.shape[:2]
+    th, tw = tgt.shape[:2]
+
+    gray_ref = cv2.cvtColor(ref, cv2.COLOR_BGR2GRAY) if len(ref.shape) == 3 and ref.shape[2] == 3 else ref
+    gray_tgt = cv2.cvtColor(tgt, cv2.COLOR_BGR2GRAY) if len(tgt.shape) == 3 and tgt.shape[2] == 3 else tgt
+
+    cw = max(20, int(min(rw, tw) * 0.60))
+    ch = max(20, int(min(rh, th) * 0.60))
+
+    if rw <= tw and rh <= th:
+        cx_ref = (rw - cw) // 2
+        cy_ref = (rh - ch) // 2
+        patch = gray_ref[cy_ref : cy_ref + ch, cx_ref : cx_ref + cw]
+        res = cv2.matchTemplate(gray_tgt, patch, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(res)
+        if max_val > 0.40:
+            shift_x = max_loc[0] - cx_ref
+            shift_y = max_loc[1] - cy_ref
+        else:
+            shift_x, shift_y = 0, 0
+    else:
+        cx_tgt = (tw - cw) // 2
+        cy_tgt = (th - ch) // 2
+        patch = gray_tgt[cy_tgt : cy_tgt + ch, cx_tgt : cx_tgt + cw]
+        res = cv2.matchTemplate(gray_ref, patch, cv2.TM_CCOEFF_NORMED)
+        _, max_val, _, max_loc = cv2.minMaxLoc(res)
+        if max_val > 0.40:
+            shift_x = -(max_loc[0] - cx_tgt)
+            shift_y = -(max_loc[1] - cy_tgt)
+        else:
+            shift_x, shift_y = 0, 0
+
+    if abs(shift_x) > rw * 0.25 or abs(shift_y) > rh * 0.25:
+        shift_x, shift_y = 0, 0
+
+    ref_x1 = max(0, -shift_x)
+    ref_y1 = max(0, -shift_y)
+    ref_x2 = min(rw, tw - shift_x)
+    ref_y2 = min(rh, th - shift_y)
+
+    tgt_x1 = ref_x1 + shift_x
+    tgt_y1 = ref_y1 + shift_y
+    tgt_x2 = ref_x2 + shift_x
+    tgt_y2 = ref_y2 + shift_y
+
+    aligned_ref = ref[ref_y1:ref_y2, ref_x1:ref_x2].copy()
+    aligned_tgt = tgt[tgt_y1:tgt_y2, tgt_x1:tgt_x2].copy()
+
+    min_h = min(aligned_ref.shape[0], aligned_tgt.shape[0])
+    min_w = min(aligned_ref.shape[1], aligned_tgt.shape[1])
+    aligned_ref = aligned_ref[:min_h, :min_w]
+    aligned_tgt = aligned_tgt[:min_h, :min_w]
+
+    return aligned_ref, aligned_tgt, (ref_x1, ref_y1), (tgt_x1, tgt_y1)
+
+
 def detect_viewports(image: np.ndarray, split_mode: str = "auto") -> Tuple[Tuple[int, int, int, int], Tuple[int, int, int, int], str]:
     """
     Detects active game viewports (Reference Panel and Target Panel) within a composite image.
@@ -13,6 +220,11 @@ def detect_viewports(image: np.ndarray, split_mode: str = "auto") -> Tuple[Tuple
     """
     height, width = image.shape[:2]
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 and image.shape[2] == 3 else image.copy()
+
+    # 0. High-accuracy frame body segmentation: find prominent matching frame bodies
+    frame_match = detect_matching_frame_bodies(image, split_mode=split_mode)
+    if frame_match is not None:
+        return frame_match
 
     # 1. Vertical periodic matching for dual vertical panels
     if split_mode in ("auto", "vertical") and height > width * 1.05:
@@ -431,7 +643,7 @@ def annotate_game_sheet(
 
     for mark in differences:
         # Reference panel annotation
-        pt_ref = (rx + mark.center_x, ry + mark.center_y)
+        pt_ref = mark.global_ref_center if mark.global_ref_center is not None else (rx + mark.center_x, ry + mark.center_y)
         cv2.circle(annotated, pt_ref, mark.radius, red_color, thickness)
         cv2.putText(
             annotated,
@@ -444,7 +656,7 @@ def annotate_game_sheet(
         )
 
         # Target panel annotation
-        pt_tgt = (tx + mark.center_x, ty + mark.center_y)
+        pt_tgt = mark.global_tgt_center if mark.global_tgt_center is not None else (tx + mark.center_x, ty + mark.center_y)
         cv2.circle(annotated, pt_tgt, mark.radius, red_color, thickness)
         cv2.putText(
             annotated,
@@ -480,10 +692,6 @@ def compare_game_sheet(
         (rx, ry, rw, rh), (tx, ty, tw, th) = custom_boxes
         ref_panel = image[ry : ry + rh, rx : rx + rw].copy()
         tgt_panel = image[ty : ty + th, tx : tx + tw].copy()
-        min_h = min(ref_panel.shape[0], tgt_panel.shape[0])
-        min_w = min(ref_panel.shape[1], tgt_panel.shape[1])
-        ref_panel = ref_panel[:min_h, :min_w]
-        tgt_panel = tgt_panel[:min_h, :min_w]
         ref_offset = (rx, ry)
         tgt_offset = (tx, ty)
         effective_mode = "custom"
@@ -506,9 +714,14 @@ def compare_game_sheet(
             image.copy(),
         )
 
+    # Micro-align panels to absorb asymmetric borders, independent widths, or minor translation jitter
+    ref_aligned, tgt_aligned, (ref_sub_x, ref_sub_y), (tgt_sub_x, tgt_sub_y) = align_panels_content(
+        ref_panel, tgt_panel
+    )
+
     differences = detect_differences(
-        ref_panel=ref_panel,
-        tgt_panel=tgt_panel,
+        ref_panel=ref_aligned,
+        tgt_panel=tgt_aligned,
         diff_threshold=diff_threshold,
         min_area=min_area,
         blur_radius=blur_radius,
@@ -522,12 +735,12 @@ def compare_game_sheet(
         for idx, d in enumerate(differences, 1):
             d.id = idx
 
-    # Populate global coordinates
+    # Populate global coordinates including micro-alignment sub-offsets
     rx, ry = ref_offset
     tx, ty = tgt_offset
     for d in differences:
-        d.global_ref_center = (rx + d.center_x, ry + d.center_y)
-        d.global_tgt_center = (tx + d.center_x, ty + d.center_y)
+        d.global_ref_center = (rx + ref_sub_x + d.center_x, ry + ref_sub_y + d.center_y)
+        d.global_tgt_center = (tx + tgt_sub_x + d.center_x, ty + tgt_sub_y + d.center_y)
 
     annotated_image = annotate_game_sheet(
         image=image,
