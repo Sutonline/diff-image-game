@@ -404,6 +404,22 @@ def merge_overlapping_circles(
             used.add(i)
         current = new_list
 
+    # Final pass: guarantee strict mathematical non-overlapping invariant: dist >= r1 + r2
+    for i in range(len(current)):
+        for j in range(i + 1, len(current)):
+            m1 = current[i]
+            m2 = current[j]
+            dist = float(np.hypot(m1.center_x - m2.center_x, m1.center_y - m2.center_y))
+            if dist < (m1.radius + m2.radius):
+                target_sum = max(16.0, dist - 0.5)
+                curr_sum = float(m1.radius + m2.radius)
+                if curr_sum > 0:
+                    scale = target_sum / curr_sum
+                    m1.radius = max(8, int(m1.radius * scale))
+                    m2.radius = max(8, int(m2.radius * scale))
+                    if m1.radius + m2.radius > dist:
+                        m2.radius = max(8, int(dist - m1.radius))
+
     current.sort(key=lambda m: (m.center_y, m.center_x))
     for idx, m in enumerate(current, start=1):
         m.id = idx
@@ -477,32 +493,32 @@ def detect_differences(
     # Binary Threshold
     _, thresh = cv2.threshold(diff_inner, diff_threshold, 255, cv2.THRESH_BINARY)
 
-    # Morphological Open (filter high-frequency speckles)
-    open_k = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    opened = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, open_k)
-
-    # Morphological Close
-    close_kernel_size = 7 if max(panel_h, panel_w) > 600 else 5
+    # Morphological Close to connect nearby pixels without deleting fine thin details
+    close_kernel_size = 5 if max(panel_h, panel_w) > 600 else 5
     close_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_kernel_size, close_kernel_size))
-    closed = cv2.morphologyEx(opened, cv2.MORPH_CLOSE, close_k)
+    closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, close_k)
 
-    # Find contours
-    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    # Connected components analysis for accurate pixel area
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(closed, connectivity=8)
+
+    # Adaptive minimum area scaled with panel resolution
+    eff_min_area = max(min_area, int(min_area * (panel_w / 650.0) ** 1.5))
 
     raw_marks: List[DifferenceMark] = []
-    for cnt in contours:
-        area = float(cv2.contourArea(cnt))
-        if area < min_area:
+    for idx in range(1, num_labels):
+        area = float(stats[idx, cv2.CC_STAT_AREA])
+        if area < eff_min_area:
             continue
 
-        (cx, cy), radius = cv2.minEnclosingCircle(cnt)
-        max_r_allowed = int(min(panel_h, panel_w) * 0.15)
+        w = stats[idx, cv2.CC_STAT_WIDTH]
+        h = stats[idx, cv2.CC_STAT_HEIGHT]
+        cx = int(centroids[idx][0])
+        cy = int(centroids[idx][1])
+
+        radius = max(14, int(max(w, h) * 0.65))
+        max_r_allowed = int(min(panel_h, panel_w) * 0.18)
         if radius > max_r_allowed:
             continue
-        # Reject thin wire/seam noise (solidity check)
-        if radius > 18 and (area / (np.pi * radius * radius)) < 0.10:
-            continue
-        padded_radius = max(int(radius) + 3, 12)
 
         actual_cx = int(cx + border_margin)
         actual_cy = int(cy + border_margin)
@@ -512,20 +528,20 @@ def detect_differences(
                 id=0,
                 center_x=actual_cx,
                 center_y=actual_cy,
-                radius=padded_radius,
+                radius=radius,
                 bounding_box=(
-                    max(0, int(actual_cx - radius)),
-                    max(0, int(actual_cy - radius)),
-                    int(2 * radius),
-                    int(2 * radius),
+                    max(0, actual_cx - w // 2),
+                    max(0, actual_cy - h // 2),
+                    w,
+                    h,
                 ),
                 area=area,
             )
         )
 
-    # Apply strict non-overlapping merge with adaptive radius ceiling to guarantee clean, accurate circles
-    max_merge_r = max(60, int(min(panel_h, panel_w) * 0.20))
-    return merge_overlapping_circles(raw_marks, buffer_ratio=1.0, max_radius=max_merge_r)
+    # Apply non-overlapping merge with balanced buffer ratio to prevent over-merging nearby distinct marks
+    max_merge_r = max(55, int(min(panel_h, panel_w) * 0.20))
+    return merge_overlapping_circles(raw_marks, buffer_ratio=0.85, max_radius=max_merge_r)
 
 
 def annotate_game_sheet(
