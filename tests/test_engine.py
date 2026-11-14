@@ -165,3 +165,20 @@ def test_compare_game_sheet_max_differences_limit():
     assert len(result.differences) == 10
     # Verified IDs are sequential 1..10
     assert [d.id for d in result.differences] == list(range(1, 11))
+
+
+def test_detect_differences_empty_panel_safety():
+    from diff_game.engine import detect_differences
+    empty = np.zeros((0, 0, 3), dtype=np.uint8)
+    assert detect_differences(empty, empty) == []
+    assert detect_differences(None, None) == []
+
+
+def test_compare_game_sheet_invalid_custom_boxes():
+    from diff_game.engine import compare_game_sheet
+    img = np.zeros((400, 400, 3), dtype=np.uint8)
+    # 0-sized boxes
+    result, _ = compare_game_sheet(img, custom_boxes=((0, 0, 0, 0), (0, 0, 0, 0)))
+    assert result.difference_count == 0
+    assert result.differences == []
+

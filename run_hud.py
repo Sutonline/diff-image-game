@@ -113,14 +113,14 @@ def main():
     print("\n" + "-" * 60)
     print("🎮 快捷控制：")
     print("   👉 每次玩新关卡：直接按 [回车] 键即刻自动重新识别并圈出！")
-    print("   👉 调整红框位置：输入 c 并按回车，用鼠标拖动或缩放红框")
-    print("   👉 恢复自动检测：输入 r 并按回车，清除保存的自定义框位")
+    print("   👉 调整红框位置：输入 c 并按回车，微调当前红框位置与大小")
+    print("   👉 重置并手动调整：输入 r 并按回车，清除旧配置并重新拖动对齐红框")
     print("   👉 退出辅助系统：输入 q 并按回车")
     print("-" * 60)
 
     while True:
         try:
-            user_input = input("\n👉 按 [回车] 识别关卡 (输入 c 调整框位, r 重置, q 退出) > ").strip().lower()
+            user_input = input("\n👉 按 [回车] 识别关卡 (输入 c 调整框位, r 重置调整, q 退出) > ").strip().lower()
             if user_input in ("q", "quit", "exit"):
                 kill_existing_overlays()
                 print("👋 已退出辅助系统，游戏愉快！")
@@ -129,29 +129,29 @@ def main():
             curr_window = detect_game_window() or window
 
             if user_input in ("c", "calibrate"):
-                launch_calibration_hud(curr_window)
-                # Immediately solve with the new calibration
-                solve_and_display_hud(
-                    window=curr_window,
-                    click_through=not args.no_click_through,
-                    timeout=args.timeout,
-                    diff_threshold=args.threshold,
-                    min_area=args.min_area,
-                    max_marks=curr_max_marks,
-                )
+                if launch_calibration_hud(curr_window):
+                    solve_and_display_hud(
+                        window=curr_window,
+                        click_through=not args.no_click_through,
+                        timeout=args.timeout,
+                        diff_threshold=args.threshold,
+                        min_area=args.min_area,
+                        max_marks=curr_max_marks,
+                    )
                 continue
 
             if user_input in ("r", "reset"):
                 clear_viewport_config()
-                print("🔄 已重置红框位置为全自动算法检测。")
-                solve_and_display_hud(
-                    window=curr_window,
-                    click_through=not args.no_click_through,
-                    timeout=args.timeout,
-                    diff_threshold=args.threshold,
-                    min_area=args.min_area,
-                    max_marks=curr_max_marks,
-                )
+                print("🔄 已清除旧配置，正在为您启动交互式手动调整模式...")
+                if launch_calibration_hud(curr_window):
+                    solve_and_display_hud(
+                        window=curr_window,
+                        click_through=not args.no_click_through,
+                        timeout=args.timeout,
+                        diff_threshold=args.threshold,
+                        min_area=args.min_area,
+                        max_marks=curr_max_marks,
+                    )
                 continue
 
             # Standard Enter refresh

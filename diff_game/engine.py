@@ -99,22 +99,13 @@ def detect_viewports(image: np.ndarray, split_mode: str = "auto") -> Tuple[Tuple
                 panel_y = 0
                 panel_h = delta_y
 
+            if panel_h < 20:
+                panel_y = 0
+                panel_h = delta_y
+
             # Detect left/right solid borders (letterboxing or window chrome)
             sample_ref = gray[panel_y:panel_y + panel_h, :]
-            col_stds = np.std(sample_ref, axis=0)
-            left_x = 0
-            while left_x < int(width * 0.15) and col_stds[left_x] < 3.0:
-                left_x += 1
-            right_x = width
-            while right_x > int(width * 0.85) and col_stds[right_x - 1] < 3.0:
-                right_x -= 1
-            panel_x = left_x
-            panel_w = max(width // 2, right_x - left_x)
-
-            ref_box = (int(panel_x), int(panel_y), int(panel_w), int(panel_h))
-            tgt_box = (int(panel_x + delta_x), int(panel_y + delta_y), int(panel_w), int(panel_h))
-            return ref_box, tgt_box, "vertical"
-            col_stds = np.std(sample_ref, axis=0)
+            col_stds = np.std(sample_ref, axis=0) if sample_ref.size > 0 else np.ones(width) * 10.0
             left_x = 0
             while left_x < int(width * 0.15) and col_stds[left_x] < 3.0:
                 left_x += 1
@@ -209,6 +200,24 @@ def split_game_sheet(
 
     ref = image[ry:ry + rh, rx:rx + rw].copy()
     tgt = image[ty:ty + th, tx:tx + tw].copy()
+
+    # Guard against invalid or empty crops
+    if ref.size == 0 or tgt.size == 0 or ref.shape[0] < 5 or ref.shape[1] < 5:
+        height, width = image.shape[:2]
+        if (split_mode == "auto" and width > height) or split_mode == "horizontal":
+            mid = width // 2
+            ref = image[:, :mid].copy()
+            tgt = image[:, mid:].copy()
+            rx, ry = 0, 0
+            tx, ty = mid, 0
+            effective_mode = "horizontal"
+        else:
+            mid = height // 2
+            ref = image[:mid, :].copy()
+            tgt = image[mid:, :].copy()
+            rx, ry = 0, 0
+            tx, ty = 0, mid
+            effective_mode = "vertical"
 
     # Align dimensions if 1-pixel rounding difference exists
     min_h = min(ref.shape[0], tgt.shape[0])
@@ -312,6 +321,9 @@ def detect_differences(
     """
     Detects difference marks between two aligned panels with noise filtering and circular NMS.
     """
+    if ref_panel is None or tgt_panel is None or ref_panel.size == 0 or tgt_panel.size == 0:
+        return []
+
     panel_h, panel_w = ref_panel.shape[:2]
 
     # Grayscale
@@ -482,6 +494,17 @@ def compare_game_sheet(
         )
         # If mobile screenshot viewport is detected (offset > 50px), ignore outer 20px frame border
         border_margin = 20 if (ref_offset[1] > 50 or ref_offset[0] > 50) else 0
+
+    if ref_panel is None or tgt_panel is None or ref_panel.size == 0 or tgt_panel.size == 0:
+        return (
+            DiffResult(
+                split_mode=effective_mode,
+                difference_count=0,
+                differences=[],
+                execution_time_ms=(time.perf_counter() - start_time) * 1000,
+            ),
+            image.copy(),
+        )
 
     differences = detect_differences(
         ref_panel=ref_panel,
