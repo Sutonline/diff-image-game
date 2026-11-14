@@ -5,144 +5,14 @@ import numpy as np
 from diff_game.models import DifferenceMark, DiffResult
 
 
-def detect_matching_frame_bodies(
-    image: np.ndarray, split_mode: str = "auto"
-) -> Optional[Tuple[Tuple[int, int, int, int], Tuple[int, int, int, int], str]]:
-    """
-    Automatic frame body segmentation:
-    Finds prominent rectangular frames/card boundaries in the image that are
-    roughly consistent ('大概一致') in geometry and highly correlated in visual content.
-    Returns: (ref_box, tgt_box, layout_mode) or None if no matching frame pair is found.
-    Allows independent widths, heights, and offsets for the top and bottom panels.
-    """
-    h, w = image.shape[:2]
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 and image.shape[2] == 3 else image.copy()
-
-    candidate_boxes = []
-
-    # 1. Horizontal boundary line detection via morphological line filter
-    h_len = max(30, int(w * 0.25))
-    h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (h_len, 1))
-    gy = np.abs(cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3))
-    h_lines = cv2.morphologyEx((gy > 25).astype(np.uint8) * 255, cv2.MORPH_OPEN, h_kernel)
-
-    row_sums = np.sum(h_lines > 0, axis=1)
-    line_rows = []
-    for y in range(h):
-        if row_sums[y] > w * 0.22:
-            if not line_rows or (y - line_rows[-1][-1]) > 6:
-                line_rows.append([y])
-            else:
-                line_rows[-1].append(y)
-
-    peak_y = [int(np.mean(cluster)) for cluster in line_rows]
-
-    for i in range(len(peak_y)):
-        for j in range(i + 1, len(peak_y)):
-            box_h = peak_y[j] - peak_y[i]
-            if int(h * 0.12) <= box_h <= int(h * 0.60):
-                band = gray[peak_y[i] : peak_y[j], :]
-                col_std = np.std(band, axis=0)
-                gx = np.abs(cv2.Sobel(band, cv2.CV_32F, 1, 0, ksize=3))
-                col_grad = np.mean(gx, axis=0)
-
-                left_x = 0
-                while left_x < int(w * 0.20) and col_std[left_x] < 3.0:
-                    left_x += 1
-                for x in range(left_x, min(int(w * 0.20), left_x + 35)):
-                    if col_grad[x] > 35:
-                        left_x = x
-                        break
-
-                right_x = w
-                while right_x > int(w * 0.80) and col_std[right_x - 1] < 3.0:
-                    right_x -= 1
-                for x in range(right_x - 1, max(int(w * 0.80), right_x - 35), -1):
-                    if col_grad[x] > 35:
-                        right_x = x + 1
-                        break
-
-                box_w = right_x - left_x
-                if box_w > w * 0.35:
-                    candidate_boxes.append((int(left_x), int(peak_y[i]), int(box_w), int(box_h)))
-
-    # 2. Contour-based candidate boxes
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    edges = cv2.Canny(blurred, 30, 100)
-    k_close = cv2.getStructuringElement(cv2.MORPH_RECT, (13, 13))
-    closed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, k_close)
-    contours, _ = cv2.findContours(closed, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-    for c in contours:
-        x, y, bw, bh = cv2.boundingRect(c)
-        if bw > w * 0.35 and int(h * 0.12) <= bh <= int(h * 0.60):
-            candidate_boxes.append((int(x), int(y), int(bw), int(bh)))
-
-    # Deduplicate candidate boxes
-    unique = []
-    for b in candidate_boxes:
-        if not any(
-            abs(b[0] - u[0]) < 12 and abs(b[1] - u[1]) < 12 and abs(b[2] - u[2]) < 20 and abs(b[3] - u[3]) < 20
-            for u in unique
-        ):
-            unique.append(b)
-
-    best_pair = None
-    best_score = -1.0
-    layout_mode = "vertical"
-
-    # Evaluate pairs ('大概一致' geometric consistency + visual correlation)
-    for i in range(len(unique)):
-        for j in range(len(unique)):
-            if i == j:
-                continue
-            b1 = unique[i]
-            b2 = unique[j]
-
-            # Vertical pair check
-            if split_mode in ("auto", "vertical") and b2[1] >= b1[1] + b1[3] * 0.75:
-                w_diff = abs(b1[2] - b2[2]) / max(b1[2], b2[2])
-                h_diff = abs(b1[3] - b2[3]) / max(b1[3], b2[3])
-                x_diff = abs(b1[0] - b2[0]) / float(w)
-
-                if w_diff <= 0.18 and h_diff <= 0.18 and x_diff <= 0.15:
-                    p1 = gray[b1[1] : b1[1] + b1[3], b1[0] : b1[0] + b1[2]]
-                    p2 = gray[b2[1] : b2[1] + b2[3], b2[0] : b2[0] + b2[2]]
-                    if p1.size > 0 and p2.size > 0:
-                        r1 = cv2.resize(p1, (96, 96))
-                        r2 = cv2.resize(p2, (96, 96))
-                        res = cv2.matchTemplate(r1, r2, cv2.TM_CCOEFF_NORMED)
-                        corr = float(res[0][0])
-                        geom_score = 1.0 - (w_diff + h_diff) * 0.5
-                        total = corr * 0.75 + geom_score * 0.25
-                        if corr > 0.40 and total > best_score:
-                            best_score = total
-                            best_pair = (b1, b2)
-                            layout_mode = "vertical"
-
-            # Horizontal pair check
-            if split_mode in ("auto", "horizontal") and b2[0] >= b1[0] + b1[2] * 0.75:
-                w_diff = abs(b1[2] - b2[2]) / max(b1[2], b2[2])
-                h_diff = abs(b1[3] - b2[3]) / max(b1[3], b2[3])
-                y_diff = abs(b1[1] - b2[1]) / float(h)
-
-                if w_diff <= 0.18 and h_diff <= 0.18 and y_diff <= 0.15:
-                    p1 = gray[b1[1] : b1[1] + b1[3], b1[0] : b1[0] + b1[2]]
-                    p2 = gray[b2[1] : b2[1] + b2[3], b2[0] : b2[0] + b2[2]]
-                    if p1.size > 0 and p2.size > 0:
-                        r1 = cv2.resize(p1, (96, 96))
-                        r2 = cv2.resize(p2, (96, 96))
-                        res = cv2.matchTemplate(r1, r2, cv2.TM_CCOEFF_NORMED)
-                        corr = float(res[0][0])
-                        geom_score = 1.0 - (w_diff + h_diff) * 0.5
-                        total = corr * 0.75 + geom_score * 0.25
-                        if corr > 0.40 and total > best_score:
-                            best_score = total
-                            best_pair = (b1, b2)
-                            layout_mode = "horizontal"
-
-    if best_pair and best_score >= 0.50:
-        return best_pair[0], best_pair[1], layout_mode
-    return None
+# Calibrated default viewport ratios for standard WeChat mini program window (353x690 pt / 706x1380 px)
+DEFAULT_WECHAT_VIEWPORT_RATIOS = {
+    "x": 0.038,
+    "y_ref": 0.235,
+    "y_tgt": 0.559,
+    "w": 0.924,
+    "h": 0.321,
+}
 
 
 def align_panels_content(
@@ -212,7 +82,11 @@ def align_panels_content(
     return aligned_ref, aligned_tgt, (ref_x1, ref_y1), (tgt_x1, tgt_y1)
 
 
-def detect_viewports(image: np.ndarray, split_mode: str = "auto") -> Tuple[Tuple[int, int, int, int], Tuple[int, int, int, int], str]:
+def detect_viewports(
+    image: np.ndarray,
+    split_mode: str = "auto",
+    use_fixed_wechat: bool = False,
+) -> Tuple[Tuple[int, int, int, int], Tuple[int, int, int, int], str]:
     """
     Detects active game viewports (Reference Panel and Target Panel) within a composite image.
     Handles cropped game sheets, WeChat desktop mini programs, and full mobile screenshots.
@@ -221,10 +95,23 @@ def detect_viewports(image: np.ndarray, split_mode: str = "auto") -> Tuple[Tuple
     height, width = image.shape[:2]
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 and image.shape[2] == 3 else image.copy()
 
-    # 0. High-accuracy frame body segmentation: find prominent matching frame bodies
-    frame_match = detect_matching_frame_bodies(image, split_mode=split_mode)
-    if frame_match is not None:
-        return frame_match
+    # Calibrated default viewport boxes for standard WeChat mini program window (353x690 pt / 706x1380 px)
+    default_ref_box = (
+        int(width * DEFAULT_WECHAT_VIEWPORT_RATIOS["x"]),
+        int(height * DEFAULT_WECHAT_VIEWPORT_RATIOS["y_ref"]),
+        int(width * DEFAULT_WECHAT_VIEWPORT_RATIOS["w"]),
+        int(height * DEFAULT_WECHAT_VIEWPORT_RATIOS["h"]),
+    )
+    default_tgt_box = (
+        int(width * DEFAULT_WECHAT_VIEWPORT_RATIOS["x"]),
+        int(height * DEFAULT_WECHAT_VIEWPORT_RATIOS["y_tgt"]),
+        int(width * DEFAULT_WECHAT_VIEWPORT_RATIOS["w"]),
+        int(height * DEFAULT_WECHAT_VIEWPORT_RATIOS["h"]),
+    )
+
+    # If user explicitly requested fixed default WeChat mini-program boxes
+    if use_fixed_wechat and height > width * 1.4:
+        return default_ref_box, default_tgt_box, "vertical"
 
     # 1. Vertical periodic matching for dual vertical panels
     if split_mode in ("auto", "vertical") and height > width * 1.05:
@@ -331,6 +218,10 @@ def detect_viewports(image: np.ndarray, split_mode: str = "auto") -> Tuple[Tuple
             tgt_box = (int(panel_x + delta_x), int(panel_y + delta_y), int(panel_w), int(panel_h))
             return ref_box, tgt_box, "vertical"
 
+        # If periodic matching is uncertain but explicitly requested WeChat mini-program layout
+        if use_fixed_wechat and height > width * 1.4:
+            return default_ref_box, default_tgt_box, "vertical"
+
     # 2. Horizontal correlation for wide images
     if split_mode in ("auto", "horizontal") and width > height * 1.3:
         best_val = -1.0
@@ -399,14 +290,19 @@ def detect_viewports(image: np.ndarray, split_mode: str = "auto") -> Tuple[Tuple
 
 
 def split_game_sheet(
-    image: np.ndarray, split_mode: str = "auto", return_offsets: bool = False
+    image: np.ndarray,
+    split_mode: str = "auto",
+    return_offsets: bool = False,
+    use_fixed_wechat: bool = False,
 ):
     """
     Extracts panels.
     If return_offsets=False (default): returns (ref_panel, tgt_panel, effective_mode).
     If return_offsets=True: returns (ref_panel, tgt_panel, effective_mode, (ref_x, ref_y), (tgt_x, tgt_y)).
     """
-    ref_box, tgt_box, effective_mode = detect_viewports(image, split_mode=split_mode)
+    ref_box, tgt_box, effective_mode = detect_viewports(
+        image, split_mode=split_mode, use_fixed_wechat=use_fixed_wechat
+    )
     rx, ry, rw, rh = ref_box
     tx, ty, tw, th = tgt_box
 
@@ -679,6 +575,7 @@ def compare_game_sheet(
     blur_radius: int = 3,
     max_differences: Optional[int] = None,
     custom_boxes: Optional[Tuple[Tuple[int, int, int, int], Tuple[int, int, int, int]]] = None,
+    use_fixed_wechat: bool = False,
 ) -> Tuple[DiffResult, np.ndarray]:
     """
     Main high-level comparison pipeline:
@@ -698,7 +595,7 @@ def compare_game_sheet(
         border_margin = 0
     else:
         ref_panel, tgt_panel, effective_mode, ref_offset, tgt_offset = split_game_sheet(
-            image, split_mode=split_mode, return_offsets=True
+            image, split_mode=split_mode, return_offsets=True, use_fixed_wechat=use_fixed_wechat
         )
         # If mobile screenshot viewport is detected (offset > 50px), ignore outer 20px frame border
         border_margin = 20 if (ref_offset[1] > 50 or ref_offset[0] > 50) else 0

@@ -54,26 +54,13 @@ def main():
         help="关闭点击穿透（默认开启点击穿透，可直接对着红圈点击游戏）",
     )
     parser.add_argument(
-        "--calibrate",
-        "-c",
+        "--fixed",
+        "-f",
         action="store_true",
-        help="进入交互式红框拖拽校准模式（可直接用鼠标拖动和缩放红框）",
-    )
-    parser.add_argument(
-        "--reset-calibration",
-        action="store_true",
-        help="清除已保存的红框校准配置，恢复全自动识别",
+        help="锁定微信小程序默认标准窗口 (353×690 pt) 固定红框位置，跳过动态检测",
     )
 
     args = parser.parse_args()
-
-    if args.reset_calibration:
-        if clear_viewport_config():
-            print("🗑️ 已成功清除已保存的红框校准配置，已恢复为全自动算法识别。")
-        else:
-            print("ℹ️ 当前没有保存过的红框校准配置。")
-        if not args.calibrate:
-            sys.exit(0)
 
     print("=" * 60)
     print("🎯 找茬小游戏原位透明 HUD 辅助系统 (macOS Native)")
@@ -94,12 +81,9 @@ def main():
 
     print(f"✅ 成功定位目标窗口: [{window.get('name', '微信小程序')}] (尺寸: {int(window['width'])}×{int(window['height'])})")
 
-    # Check for calibration mode
-    if args.calibrate:
-        launch_calibration_hud(window)
-
     # 2. First solve
     curr_max_marks = args.max_marks
+    use_fixed = args.fixed
     solve_and_display_hud(
         window=window,
         click_through=not args.no_click_through,
@@ -107,20 +91,23 @@ def main():
         diff_threshold=args.threshold,
         min_area=args.min_area,
         max_marks=curr_max_marks,
+        use_fixed_wechat=use_fixed,
     )
 
     # 3. Interactive loop
     print("\n" + "-" * 60)
     print("🎮 快捷控制：")
-    print("   👉 每次玩新关卡：直接按 [回车] 键即刻自动重新识别并圈出！")
-    print("   👉 调整红框位置：输入 c 并按回车，微调当前红框位置与大小")
-    print("   👉 重置并手动调整：输入 r 并按回车，清除旧配置并重新拖动对齐红框")
+    print("   👉 每次玩新关卡：直接按 [回车] 键即刻识别并圈出！")
+    print("   👉 切换写死框位：输入 f 并按回车，锁定默认小程序标准窗口红框 (353×690 pt)")
+    print("   👉 恢复动态识别：输入 a 并按回车，恢复全自动算法自适应检测")
     print("   👉 退出辅助系统：输入 q 并按回车")
     print("-" * 60)
 
     while True:
         try:
-            user_input = input("\n👉 按 [回车] 识别关卡 (输入 c 调整框位, r 重置调整, q 退出) > ").strip().lower()
+            mode_desc = "固定写死框" if use_fixed else "动态算法"
+            prompt = f"\n👉 [当前模式: {mode_desc}] 按 [回车] 识别关卡 (f 切换写死框, a 切换自适应, q 退出) > "
+            user_input = input(prompt).strip().lower()
             if user_input in ("q", "quit", "exit"):
                 kill_existing_overlays()
                 print("👋 已退出辅助系统，游戏愉快！")
@@ -128,33 +115,13 @@ def main():
 
             curr_window = detect_game_window() or window
 
-            if user_input in ("c", "calibrate"):
-                if launch_calibration_hud(curr_window):
-                    solve_and_display_hud(
-                        window=curr_window,
-                        click_through=not args.no_click_through,
-                        timeout=args.timeout,
-                        diff_threshold=args.threshold,
-                        min_area=args.min_area,
-                        max_marks=curr_max_marks,
-                    )
-                continue
+            if user_input in ("f", "fixed"):
+                use_fixed = True
+                print("🔒 已切换为：默认标准窗口写死红框模式 (353×690 pt)")
+            elif user_input in ("a", "auto"):
+                use_fixed = False
+                print("🔍 已切换为：全自动算法自适应识别红框模式")
 
-            if user_input in ("r", "reset"):
-                clear_viewport_config()
-                print("🔄 已清除旧配置，正在为您启动交互式手动调整模式...")
-                if launch_calibration_hud(curr_window):
-                    solve_and_display_hud(
-                        window=curr_window,
-                        click_through=not args.no_click_through,
-                        timeout=args.timeout,
-                        diff_threshold=args.threshold,
-                        min_area=args.min_area,
-                        max_marks=curr_max_marks,
-                    )
-                continue
-
-            # Standard Enter refresh
             solve_and_display_hud(
                 window=curr_window,
                 click_through=not args.no_click_through,
@@ -162,6 +129,7 @@ def main():
                 diff_threshold=args.threshold,
                 min_area=args.min_area,
                 max_marks=curr_max_marks,
+                use_fixed_wechat=use_fixed,
             )
         except (KeyboardInterrupt, EOFError):
             kill_existing_overlays()

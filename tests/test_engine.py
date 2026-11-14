@@ -183,24 +183,16 @@ def test_compare_game_sheet_invalid_custom_boxes():
     assert result.differences == []
 
 
-def test_detect_matching_frame_bodies_demo():
-    from pathlib import Path
-    from diff_game.engine import detect_matching_frame_bodies
-
-    demo_img_path = Path(__file__).parent.parent / "assets" / "demo_original.jpg"
-    if not demo_img_path.exists():
-        pytest.skip("Fixture assets/demo_original.jpg not found")
-
-    img = cv2.imread(str(demo_img_path))
-    match = detect_matching_frame_bodies(img)
-    assert match is not None
-    ref_b, tgt_b, mode = match
+def test_detect_viewports_fixed_wechat():
+    from diff_game.engine import detect_viewports
+    # Standard WeChat mini program window resolution (706 x 1380)
+    fake_screen = np.zeros((1380, 706, 3), dtype=np.uint8)
+    ref_b, tgt_b, mode = detect_viewports(fake_screen, use_fixed_wechat=True)
     assert mode == "vertical"
-    # Ensure reasonable dimensions for demo fixtures
-    assert ref_b[2] > 1000
-    assert tgt_b[2] > 1000
-    assert abs(ref_b[2] - tgt_b[2]) < 50
-    assert tgt_b[1] > ref_b[1] + ref_b[3] * 0.7
+    assert ref_b[0] == int(706 * 0.038)
+    assert ref_b[2] == int(706 * 0.924)
+    assert ref_b[3] == int(1380 * 0.321)
+    assert tgt_b[1] == int(1380 * 0.559)
 
 
 def test_align_panels_content_different_widths():

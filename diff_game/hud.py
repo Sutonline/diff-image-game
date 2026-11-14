@@ -124,6 +124,7 @@ def solve_and_display_hud(
     diff_threshold: int = 24,
     min_area: int = 100,
     max_marks: int = 0,
+    use_fixed_wechat: bool = False,
 ) -> int:
     """
     Captures game window, solves spot-the-difference, and displays native overlay.
@@ -151,16 +152,10 @@ def solve_and_display_hud(
     # Retina displays produce 2x image pixels relative to screen points
     scale_factor = img_w / float(width) if width > 0 else 1.0
 
-    calib = load_viewport_config()
-    custom_boxes = None
-    if calib:
-        ref_b = calib["refBox"]
-        tgt_b = calib["tgtBox"]
-        custom_boxes = (
-            (int(ref_b["x"]), int(ref_b["y"]), int(ref_b["width"]), int(ref_b["height"])),
-            (int(tgt_b["x"]), int(tgt_b["y"]), int(tgt_b["width"]), int(tgt_b["height"])),
-        )
-        print("📐 已应用用户自定义红框校准配置 (无需重新识别，永久复用)")
+    if use_fixed_wechat:
+        print("📐 模式: 锁定微信小程序标准默认窗口红框位 (353×690 pt 标定)")
+    else:
+        print("🔍 模式: 全自动算法识别红框视口")
 
     print(f"⚡ OpenCV 算法比对中 (画面像素: {img_w}×{img_h}, Retina倍率: {scale_factor:.1f}x)...")
     result, _ = compare_game_sheet(
@@ -168,7 +163,7 @@ def solve_and_display_hud(
         diff_threshold=diff_threshold,
         min_area=min_area,
         max_differences=max_marks if max_marks > 0 else None,
-        custom_boxes=custom_boxes,
+        use_fixed_wechat=use_fixed_wechat,
     )
 
     diff_count = len(result.differences)
