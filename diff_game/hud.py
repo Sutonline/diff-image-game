@@ -121,8 +121,8 @@ def solve_and_display_hud(
     window: Dict[str, Any],
     click_through: bool = True,
     timeout: float = 15.0,
-    diff_threshold: int = 16,
-    min_area: int = 40,
+    diff_threshold: int = 14,
+    min_area: int = 25,
     max_marks: int = 0,
     use_fixed_wechat: bool = False,
 ) -> int:

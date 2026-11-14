@@ -211,3 +211,22 @@ def test_align_panels_content_different_widths():
     assert aligned_ref.shape[1] > 250
 
 
+def test_detect_differences_preserves_fine_accessories():
+    from diff_game.engine import detect_differences
+
+    # Create a 200x200 panel
+    ref = np.ones((200, 200, 3), dtype=np.uint8) * 120
+    tgt = np.ones((200, 200, 3), dtype=np.uint8) * 120
+
+    # Draw a thin watch/bracelet difference (width 25, height 6)
+    cv2.rectangle(ref, (80, 97), (105, 103), (40, 40, 220), -1)
+
+    diffs = detect_differences(ref, tgt, diff_threshold=14, min_area=25)
+    assert len(diffs) == 1
+    d = diffs[0]
+    assert 80 <= d.center_x <= 105
+    assert 95 <= d.center_y <= 105
+    assert d.area >= 25
+
+
+
