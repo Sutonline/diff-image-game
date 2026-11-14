@@ -15,47 +15,55 @@ def detect_viewports(image: np.ndarray, split_mode: str = "auto") -> Tuple[Tuple
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if len(image.shape) == 3 and image.shape[2] == 3 else image.copy()
 
     # 1. Vertical periodic matching for dual vertical panels
-    if split_mode in ("auto", "vertical") and height > width * 1.1:
+    if split_mode in ("auto", "vertical") and height > width * 1.05:
+        # Downsample 2x for fast multi-scale period discovery robust to any mini program window zoom/scale
+        scale = 2
+        small = cv2.resize(gray, (width // scale, height // scale))
+        sh, sw = small.shape
+
         best_val = -1.0
         best_delta_y = 0
         best_delta_x = 0
 
-        # Scan candidate template heights and positions with 2D search (allows ±x micro-shift alignment)
-        margin_x = int(width * 0.12)
-        search_margin_x = int(width * 0.06)
-        tpl_w = width - 2 * margin_x
+        margin_x = int(sw * 0.10)
+        tpl_h = max(20, int(sh * 0.10))
 
-        for ty_ratio in [0.15, 0.22, 0.30]:
-            tpl_y = int(height * ty_ratio)
-            tpl_h = max(30, int(height * 0.12))
-            tpl = gray[tpl_y:tpl_y + tpl_h, margin_x:margin_x + tpl_w]
-            search_area = gray[int(height * 0.35):, search_margin_x:width - search_margin_x]
+        # Sample across multiple potential vertical positions to handle any window scale / zoom
+        for y_ratio in np.linspace(0.18, 0.35, 8):
+            ty = int(sh * y_ratio)
+            tpl = small[ty : ty + tpl_h, margin_x : sw - margin_x]
+            search_top = max(int(sh * 0.40), ty + tpl_h + int(sh * 0.05))
+            search = small[search_top :, int(margin_x * 0.5) : sw - int(margin_x * 0.5)]
 
-            res = cv2.matchTemplate(search_area, tpl, cv2.TM_CCOEFF_NORMED)
+            res = cv2.matchTemplate(search, tpl, cv2.TM_CCOEFF_NORMED)
             _, max_val, _, max_loc = cv2.minMaxLoc(res)
+            dy = (search_top + max_loc[1] - ty) * scale
+            dx = (int(margin_x * 0.5) + max_loc[0] - margin_x) * scale
 
-            if max_val > best_val:
+            if max_val > best_val and dy > height * 0.25:
                 best_val = max_val
-                best_delta_y = int(height * 0.35) + max_loc[1] - tpl_y
-                best_delta_x = search_margin_x + max_loc[0] - margin_x
+                best_delta_y = dy
+                best_delta_x = dx
 
-        if best_val > 0.65 and best_delta_y > height * 0.3:
-            delta_y = best_delta_y
-            delta_x = best_delta_x
+        if best_val > 0.50 and best_delta_y > height * 0.25:
+            delta_y = int(best_delta_y)
+            delta_x = int(best_delta_x)
 
             # Determine active panel bounds via row-by-row consistency between panels
             valid_h = height - delta_y
             row_diffs = np.zeros(valid_h, dtype=np.float32)
+            row_stds = np.zeros(valid_h, dtype=np.float32)
             for y in range(valid_h):
-                r1 = gray[y, margin_x:width - margin_x].astype(np.float32)
-                r2 = gray[y + delta_y, margin_x + delta_x:width - margin_x + delta_x].astype(np.float32)
+                r1 = gray[y, margin_x * scale : width - margin_x * scale].astype(np.float32)
+                r2 = gray[y + delta_y, margin_x * scale + delta_x : width - margin_x * scale + delta_x].astype(np.float32)
                 row_diffs[y] = np.mean(np.abs(r1 - r2))
+                row_stds[y] = np.std(r1)
 
             sorted_diffs = np.sort(row_diffs)
             base_diff = np.median(sorted_diffs[:int(valid_h * 0.4)])
             threshold = min(35.0, max(18.0, base_diff * 2.2))
 
-            is_panel = (row_diffs < threshold).astype(np.uint8)
+            is_panel = ((row_diffs < threshold) & (row_stds > 10.0)).astype(np.uint8)
             
             # Simple run-length encoding to identify contiguous panel block:
             runs = []
@@ -93,6 +101,19 @@ def detect_viewports(image: np.ndarray, split_mode: str = "auto") -> Tuple[Tuple
 
             # Detect left/right solid borders (letterboxing or window chrome)
             sample_ref = gray[panel_y:panel_y + panel_h, :]
+            col_stds = np.std(sample_ref, axis=0)
+            left_x = 0
+            while left_x < int(width * 0.15) and col_stds[left_x] < 3.0:
+                left_x += 1
+            right_x = width
+            while right_x > int(width * 0.85) and col_stds[right_x - 1] < 3.0:
+                right_x -= 1
+            panel_x = left_x
+            panel_w = max(width // 2, right_x - left_x)
+
+            ref_box = (int(panel_x), int(panel_y), int(panel_w), int(panel_h))
+            tgt_box = (int(panel_x + delta_x), int(panel_y + delta_y), int(panel_w), int(panel_h))
+            return ref_box, tgt_box, "vertical"
             col_stds = np.std(sample_ref, axis=0)
             left_x = 0
             while left_x < int(width * 0.15) and col_stds[left_x] < 3.0:
