@@ -421,38 +421,47 @@ def apply_circular_nms(marks: List[DifferenceMark], overlap_threshold: float = 1
 def detect_differences(
     ref_panel: np.ndarray,
     tgt_panel: np.ndarray,
-    diff_threshold: int = 25,
+    diff_threshold: int = 16,
     min_area: int = 40,
-    blur_radius: int = 3,
+    blur_radius: int = 2,
     border_margin: int = 0,
 ) -> List[DifferenceMark]:
     """
-    Detects difference marks between two aligned panels with noise filtering and circular NMS.
+    Detects difference marks between two aligned panels with multi-channel color sensitivity,
+    noise filtering, and circular NMS.
     """
     if ref_panel is None or tgt_panel is None or ref_panel.size == 0 or tgt_panel.size == 0:
         return []
 
     panel_h, panel_w = ref_panel.shape[:2]
-
-    # Grayscale
-    if len(ref_panel.shape) == 3 and ref_panel.shape[2] == 3:
-        gray_ref = cv2.cvtColor(ref_panel, cv2.COLOR_BGR2GRAY)
-        gray_tgt = cv2.cvtColor(tgt_panel, cv2.COLOR_BGR2GRAY)
-    else:
-        gray_ref = ref_panel.copy()
-        gray_tgt = tgt_panel.copy()
-
-    # Gaussian Blur (adaptive kernel size)
     ksize = max(3, blur_radius * 2 + 1 if blur_radius % 2 == 0 else blur_radius)
-    blurred_ref = cv2.GaussianBlur(gray_ref, (ksize, ksize), 0)
-    blurred_tgt = cv2.GaussianBlur(gray_tgt, (ksize, ksize), 0)
-
-    # Shift-tolerant difference (morphological tolerance absorbs 1-2 pixel micro-jitter / Retina subpixel shifts without warping)
-    k_dim = 5 if panel_w > 500 else 3
+    k_dim = 3
     tol_k = cv2.getStructuringElement(cv2.MORPH_RECT, (k_dim, k_dim))
-    diff_ref = np.maximum(0, blurred_ref.astype(np.int16) - cv2.dilate(blurred_tgt, tol_k).astype(np.int16))
-    diff_tgt = np.maximum(0, blurred_tgt.astype(np.int16) - cv2.dilate(blurred_ref, tol_k).astype(np.int16))
-    diff = np.maximum(diff_ref, diff_tgt).astype(np.uint8)
+
+    # Multi-channel color difference to capture both luminance and chromaticity differences
+    if len(ref_panel.shape) == 3 and ref_panel.shape[2] == 3:
+        b_ref = cv2.GaussianBlur(ref_panel, (ksize, ksize), 0)
+        b_tgt = cv2.GaussianBlur(tgt_panel, (ksize, ksize), 0)
+
+        diff_b = np.maximum(
+            np.maximum(0, b_ref[:, :, 0].astype(np.int16) - cv2.dilate(b_tgt[:, :, 0], tol_k).astype(np.int16)),
+            np.maximum(0, b_tgt[:, :, 0].astype(np.int16) - cv2.dilate(b_ref[:, :, 0], tol_k).astype(np.int16)),
+        )
+        diff_g = np.maximum(
+            np.maximum(0, b_ref[:, :, 1].astype(np.int16) - cv2.dilate(b_tgt[:, :, 1], tol_k).astype(np.int16)),
+            np.maximum(0, b_tgt[:, :, 1].astype(np.int16) - cv2.dilate(b_ref[:, :, 1], tol_k).astype(np.int16)),
+        )
+        diff_r = np.maximum(
+            np.maximum(0, b_ref[:, :, 2].astype(np.int16) - cv2.dilate(b_tgt[:, :, 2], tol_k).astype(np.int16)),
+            np.maximum(0, b_tgt[:, :, 2].astype(np.int16) - cv2.dilate(b_ref[:, :, 2], tol_k).astype(np.int16)),
+        )
+        diff = np.maximum(diff_b, np.maximum(diff_g, diff_r)).astype(np.uint8)
+    else:
+        blurred_ref = cv2.GaussianBlur(ref_panel, (ksize, ksize), 0)
+        blurred_tgt = cv2.GaussianBlur(tgt_panel, (ksize, ksize), 0)
+        diff_ref = np.maximum(0, blurred_ref.astype(np.int16) - cv2.dilate(blurred_tgt, tol_k).astype(np.int16))
+        diff_tgt = np.maximum(0, blurred_tgt.astype(np.int16) - cv2.dilate(blurred_ref, tol_k).astype(np.int16))
+        diff = np.maximum(diff_ref, diff_tgt).astype(np.uint8)
 
     # Exclude border seam if specified
     if border_margin > 0 and panel_h > border_margin * 2 and panel_w > border_margin * 2:
@@ -570,9 +579,9 @@ def annotate_game_sheet(
 def compare_game_sheet(
     image: np.ndarray,
     split_mode: str = "auto",
-    diff_threshold: int = 18,
-    min_area: int = 50,
-    blur_radius: int = 3,
+    diff_threshold: int = 16,
+    min_area: int = 40,
+    blur_radius: int = 2,
     max_differences: Optional[int] = None,
     custom_boxes: Optional[Tuple[Tuple[int, int, int, int], Tuple[int, int, int, int]]] = None,
     use_fixed_wechat: bool = False,

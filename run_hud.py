@@ -33,14 +33,14 @@ def main():
     parser.add_argument(
         "--threshold",
         type=int,
-        default=24,
-        help="色差敏感度阈值（默认 24）",
+        default=16,
+        help="色差敏感度阈值（默认 16）",
     )
     parser.add_argument(
         "--min-area",
         type=int,
-        default=100,
-        help="最小连通面积过滤噪点（默认 100 px²）",
+        default=40,
+        help="最小连通面积过滤噪点（默认 40 px²）",
     )
     parser.add_argument(
         "--max-marks",
