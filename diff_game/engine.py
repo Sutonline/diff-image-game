@@ -127,26 +127,25 @@ def detect_viewports(
         margin_x = int(sw * 0.10)
         tpl_h = max(20, int(sh * 0.10))
 
-        # Sample across multiple potential vertical positions to handle any window scale / zoom
+        # Sample across multiple potential vertical positions with strict vertical alignment (delta_x = 0)
         for y_ratio in np.linspace(0.18, 0.35, 8):
             ty = int(sh * y_ratio)
             tpl = small[ty : ty + tpl_h, margin_x : sw - margin_x]
             search_top = max(int(sh * 0.40), ty + tpl_h + int(sh * 0.05))
-            search = small[search_top :, int(margin_x * 0.5) : sw - int(margin_x * 0.5)]
+            search = small[search_top :, margin_x : sw - margin_x]
 
             res = cv2.matchTemplate(search, tpl, cv2.TM_CCOEFF_NORMED)
             _, max_val, _, max_loc = cv2.minMaxLoc(res)
             dy = (search_top + max_loc[1] - ty) * scale
-            dx = (int(margin_x * 0.5) + max_loc[0] - margin_x) * scale
 
             if max_val > best_val and dy > height * 0.25:
                 best_val = max_val
                 best_delta_y = dy
-                best_delta_x = dx
+                best_delta_x = 0
 
         if best_val > 0.50 and best_delta_y > height * 0.25:
             delta_y = int(best_delta_y)
-            delta_x = int(best_delta_x)
+            delta_x = 0
 
             # Determine active panel bounds via row-by-row consistency between panels
             valid_h = height - delta_y
@@ -154,7 +153,7 @@ def detect_viewports(
             row_stds = np.zeros(valid_h, dtype=np.float32)
             for y in range(valid_h):
                 r1 = gray[y, margin_x * scale : width - margin_x * scale].astype(np.float32)
-                r2 = gray[y + delta_y, margin_x * scale + delta_x : width - margin_x * scale + delta_x].astype(np.float32)
+                r2 = gray[y + delta_y, margin_x * scale : width - margin_x * scale].astype(np.float32)
                 row_diffs[y] = np.mean(np.abs(r1 - r2))
                 row_stds[y] = np.std(r1)
 
@@ -163,6 +162,11 @@ def detect_viewports(
             threshold = min(35.0, max(18.0, base_diff * 2.2))
 
             is_panel = ((row_diffs < threshold) & (row_stds > 10.0)).astype(np.uint8)
+
+            # In window screenshots (height > width * 1.4), skip top window chrome / title bar
+            min_panel_y = int(height * 0.10) if height > width * 1.4 else 0
+            if min_panel_y > 0:
+                is_panel[:min_panel_y] = 0
             
             # Simple run-length encoding to identify contiguous panel block:
             runs = []
@@ -499,13 +503,22 @@ def detect_differences(
         cx = int(centroids[idx][0])
         cy = int(centroids[idx][1])
 
-        radius = max(14, int(max(w, h) * 0.65))
-        max_r_allowed = int(min(panel_h, panel_w) * 0.18)
-        if radius > max_r_allowed:
-            continue
+        radius = max(14, int(min(max(w, h) * 0.55, (w + h) * 0.38)))
+        max_r_allowed = min(50, int(min(panel_h, panel_w) * 0.14))
+        radius = min(radius, max_r_allowed)
 
         actual_cx = int(cx + border_margin)
         actual_cy = int(cy + border_margin)
+
+        # Ensure circle never clips across outer panel borders
+        max_dist_to_edge = min(
+            actual_cx - border_margin,
+            panel_w - border_margin - actual_cx,
+            actual_cy - border_margin,
+            panel_h - border_margin - actual_cy,
+        )
+        if max_dist_to_edge > 10:
+            radius = max(10, min(radius, max_dist_to_edge))
 
         raw_marks.append(
             DifferenceMark(
@@ -524,7 +537,7 @@ def detect_differences(
         )
 
     # Apply non-overlapping merge with balanced buffer ratio to prevent over-merging nearby distinct marks
-    max_merge_r = max(55, int(min(panel_h, panel_w) * 0.20))
+    max_merge_r = min(55, int(min(panel_h, panel_w) * 0.16))
     return merge_overlapping_circles(raw_marks, buffer_ratio=0.85, max_radius=max_merge_r)
 
 
@@ -606,8 +619,8 @@ def compare_game_sheet(
         ref_panel, tgt_panel, effective_mode, ref_offset, tgt_offset = split_game_sheet(
             image, split_mode=split_mode, return_offsets=True, use_fixed_wechat=use_fixed_wechat
         )
-        # If mobile screenshot viewport is detected (offset > 50px), ignore outer 20px frame border
-        border_margin = 20 if (ref_offset[1] > 50 or ref_offset[0] > 50) else 0
+        # If viewport has surrounding margins (offset > 15px), ignore outer 16px frame border
+        border_margin = 16 if (ref_offset[1] > 15 or ref_offset[0] > 15) else 0
 
     if ref_panel is None or tgt_panel is None or ref_panel.size == 0 or tgt_panel.size == 0:
         return (
