@@ -95,8 +95,23 @@ def detect_game_window() -> Optional[Dict[str, Any]]:
     return windows[0]
 
 
-def capture_window_rect(x: int, y: int, width: int, height: int, output_path: str = "/tmp/hud_game_capture.png") -> str:
-    """Captures a specific screen rectangle at high speed via native CoreGraphics."""
+def capture_window_rect(
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    output_path: str = "/tmp/hud_game_capture.png",
+    window_id: Optional[int] = None,
+) -> str:
+    """
+    Captures a specific window (preferred to avoid occlusion) or screen rectangle via native tools.
+    """
+    if window_id:
+        cmd_win = ["screencapture", f"-l{window_id}", "-o", "-x", output_path]
+        res = subprocess.run(cmd_win, capture_output=True)
+        if res.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            return output_path
+
     bin_path = ensure_find_windows_binary()
     cmd = [str(bin_path), "--capture", str(x), str(y), str(width), str(height), output_path]
     res = subprocess.run(cmd, capture_output=True)
@@ -139,10 +154,11 @@ def solve_and_display_hud(
     y = int(window["y"])
     width = int(window["width"])
     height = int(window["height"])
+    window_id = window.get("id")
 
-    print(f"📸 捕获微信小游戏窗口: [{window.get('name', '小程序')}] ({width}×{height} at X={x}, Y={y})...")
+    print(f"📸 捕获微信小游戏窗口: [{window.get('name', '小程序')}] ({width}×{height} at X={x}, Y={y}, WindowID={window_id})...")
     capture_path = "/tmp/hud_game_capture.png"
-    capture_window_rect(x, y, width, height, capture_path)
+    capture_window_rect(x, y, width, height, capture_path, window_id=window_id)
 
     img = cv2.imread(capture_path)
     if img is None:

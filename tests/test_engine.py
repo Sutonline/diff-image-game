@@ -229,4 +229,29 @@ def test_detect_differences_preserves_fine_accessories():
     assert d.area >= 25
 
 
+def test_detect_target_differences_count():
+    from diff_game.engine import detect_target_differences_count
+
+    # Non-tall or empty images should return None
+    assert detect_target_differences_count(None) is None
+    assert detect_target_differences_count(np.zeros((100, 100, 3), dtype=np.uint8)) is None
+
+    # Synthetic tall image (w=700, h=1400) with a horizontal row of 10 circles in the badge strip (y=210..364)
+    h, w = 1400, 700
+    img = np.ones((h, w, 3), dtype=np.uint8) * 200
+    badge_y = int(h * 0.21)  # ~294
+    r = 16
+    start_x = 100
+    spacing = 50
+    count = 10
+    for i in range(count):
+        cx = start_x + i * spacing
+        cv2.circle(img, (cx, badge_y), r, (50, 50, 50), 2)
+        cv2.putText(img, "?", (cx - 5, badge_y + 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (50, 50, 50), 1)
+
+    detected = detect_target_differences_count(img)
+    assert detected == count
+
+
+
 

@@ -589,6 +589,61 @@ def annotate_game_sheet(
     return annotated
 
 
+def detect_target_differences_count(image: np.ndarray) -> Optional[int]:
+    """
+    Automatically detects the number of question mark ('?') badges/slots in the mini-program UI
+    representing the exact target number of differences to find in the level.
+    Returns the count (e.g. 15), or None if no uniform badge row exists (e.g. cropped artwork).
+    """
+    if image is None or image.size == 0:
+        return None
+    h, w = image.shape[:2]
+    if h < w * 1.4:
+        return None
+
+    y1 = int(h * 0.16)
+    y2 = int(h * 0.26)
+    strip = image[y1:y2, :]
+    gray = cv2.cvtColor(strip, cv2.COLOR_BGR2GRAY)
+
+    circles = cv2.HoughCircles(
+        gray,
+        cv2.HOUGH_GRADIENT,
+        dp=1.0,
+        minDist=max(15, int(w * 0.03)),
+        param1=50,
+        param2=18,
+        minRadius=max(8, int(w * 0.015)),
+        maxRadius=max(20, int(w * 0.035)),
+    )
+
+    if circles is None or len(circles[0]) < 5:
+        return None
+
+    detected = circles[0]
+    y_coords = detected[:, 1]
+    hist, bin_edges = np.histogram(y_coords, bins=10)
+    best_bin = np.argmax(hist)
+    target_y = (bin_edges[best_bin] + bin_edges[best_bin + 1]) / 2.0
+
+    row_circles = [c for c in detected if abs(c[1] - target_y) < 8]
+    if len(row_circles) < 5:
+        return None
+
+    row_circles = sorted(row_circles, key=lambda c: c[0])
+    diffs = [row_circles[i + 1][0] - row_circles[i][0] for i in range(len(row_circles) - 1)]
+    if len(diffs) < 4:
+        return None
+
+    radii = [c[2] for c in row_circles]
+    if np.std(radii) > 2.5:
+        return None
+    if np.std(diffs) > 5.0:
+        return None
+
+    return len(row_circles)
+
+
 def compare_game_sheet(
     image: np.ndarray,
     split_mode: str = "auto",
@@ -647,9 +702,16 @@ def compare_game_sheet(
         border_margin=border_margin,
     )
 
-    # If maximum differences limit is specified, select top-K most prominent differences by area
-    if max_differences is not None and max_differences > 0 and len(differences) > max_differences:
-        differences = sorted(differences, key=lambda d: d.area, reverse=True)[:max_differences]
+    # Auto-detect target differences count from UI question mark slots if not explicitly set
+    effective_max = max_differences
+    if effective_max is None or effective_max <= 0:
+        auto_count = detect_target_differences_count(image)
+        if auto_count is not None and auto_count > 0:
+            effective_max = auto_count
+
+    # If maximum differences limit is specified (or auto-detected from UI ? badges), select top-K
+    if effective_max is not None and effective_max > 0 and len(differences) > effective_max:
+        differences = sorted(differences, key=lambda d: d.area, reverse=True)[:effective_max]
         differences.sort(key=lambda d: (d.center_y, d.center_x))
         for idx, d in enumerate(differences, 1):
             d.id = idx
