@@ -197,11 +197,27 @@ def detect_viewports(
             if merged_runs:
                 longest_run = max(merged_runs, key=lambda r: r[1])
                 panel_y = longest_run[0]
-                panel_h = min(delta_y, longest_run[1])
             else:
                 panel_y = 0
-                panel_h = delta_y
 
+            # The top panel must extend down to the central divider separating the two panels.
+            # In dual-panel vertical mobile games, the divider sits immediately above p2_top (panel_y + delta_y).
+            # Avoid prematurely cutting off the panel bottom when prominent in-game differences occur near the bottom edge.
+            p2_top = panel_y + delta_y
+            max_div = max(16, int(delta_y * 0.08))
+            search_start = max(panel_y + int(delta_y * 0.85), p2_top - max_div)
+            zone = gray[search_start : min(height, p2_top + 2), :]
+            if zone.shape[0] > 2:
+                grad = np.mean(np.abs(np.diff(zone.astype(float), axis=0)), axis=1)
+                div_y = search_start + int(np.argmax(grad))
+                refined_h = div_y - panel_y
+            else:
+                refined_h = delta_y - 6
+
+            # Bound constraints: panel_h fills the artwork area while respecting divider and window bounds
+            panel_h = max(int(delta_y * 0.90), min(refined_h, delta_y - 4))
+            if panel_y + delta_y + panel_h > height:
+                panel_h = height - panel_y - delta_y
             if panel_h < 20:
                 panel_y = 0
                 panel_h = delta_y
