@@ -66,9 +66,9 @@ def test_detect_differences_single_anomaly():
 
 def test_detect_differences_filters_noise():
     from diff_game.engine import detect_differences
-    ref = np.ones((200, 200, 3), dtype=np.uint8) * 128
+    ref = np.ones((600, 600, 3), dtype=np.uint8) * 128
     tgt = ref.copy()
-    # Draw a 2x2 tiny noise speck (area 4)
+    # Draw a 2x2 tiny noise speck (area 4 in normalized 600px space)
     tgt[50:52, 50:52] = 255
 
     diffs = detect_differences(ref, tgt, diff_threshold=25, min_area=30)
@@ -125,29 +125,35 @@ def test_merge_overlapping_circles_single_balloon():
     assert d2 + m2.radius <= m.radius + 1
 
 
-def test_spot_difference_on_real_mobile_screenshot():
+# (path, total badge slots, marks expected on this capture)
+# Captures taken mid-level show the game's green rings around already-found differences;
+# those are skipped, so only the remaining '?' slots get marks.
+SCREENSHOT_CASES = [
+    ("assets/demo_original.jpg", 20, 20),
+    # Desktop WeChat window capture; panels are offset by a sub-pixel amount after window scaling. 4 found.
+    ("tests/fixtures/lv60_window.png", 20, 16),
+    # 19 found; the one left is a faint dark speaker on a dark wall. Ceiling light streaks must not count.
+    ("tests/fixtures/lv64_window.png", 20, 1),
+]
+
+
+@pytest.mark.parametrize("rel_path,expected_count,expected_marks", SCREENSHOT_CASES)
+def test_spot_difference_on_real_mobile_screenshot(rel_path, expected_count, expected_marks):
     from pathlib import Path
-    from diff_game.engine import compare_game_sheet
+    from diff_game.engine import compare_game_sheet, detect_target_differences_count
 
-    demo_img_path = Path(__file__).parent.parent / "assets" / "demo_original.jpg"
-    if not demo_img_path.exists():
-        pytest.skip("Repository demo fixture assets/demo_original.jpg not found")
+    img_path = Path(__file__).parent.parent / rel_path
+    if not img_path.exists():
+        pytest.skip(f"Repository fixture {rel_path} not found")
 
-    img = cv2.imread(str(demo_img_path))
+    img = cv2.imread(str(img_path))
+    assert detect_target_differences_count(img) == expected_count
+
     result, annotated = compare_game_sheet(img)
-    # Detects non-overlapping differences on test2 demo screenshot
-    assert 14 <= result.difference_count <= 35
-    assert 14 <= len(result.differences) <= 35
-
-    # Strict non-overlapping rule: no two circles can overlap
-    for i in range(len(result.differences)):
-        for j in range(i + 1, len(result.differences)):
-            d1 = result.differences[i]
-            d2 = result.differences[j]
-            dist = np.hypot(d1.center_x - d2.center_x, d1.center_y - d2.center_y)
-            assert dist >= (d1.radius + d2.radius), f"Circles {d1.id} and {d2.id} overlap!"
-
-    # Verify both panels were annotated
+    assert result.target_badge_count == expected_count
+    assert result.difference_count == expected_marks
+    assert len(result.differences) == expected_marks
+    assert [d.id for d in result.differences] == list(range(1, expected_marks + 1))
     assert annotated.shape == img.shape
 
 
@@ -253,5 +259,188 @@ def test_detect_target_differences_count():
     assert detected == count
 
 
+def test_compare_game_sheet_with_extra_differences():
+    from diff_game.engine import compare_game_sheet
 
+    # Create synthetic image with 2 vertical panels and 10 widely spaced spot differences
+    h, w = 600, 300
+    sheet = np.ones((h, w, 3), dtype=np.uint8) * 150
+    # Add 10 differences in the top panel (y in 20..280, x in 30..270)
+    points = [
+        (40, 40), (100, 40), (160, 40), (220, 40),
+        (40, 100), (100, 100), (160, 100), (220, 100),
+        (40, 160), (100, 160)
+    ]
+    for px, py in points:
+        cv2.circle(sheet, (px, py), 6, (0, 0, 255), -1)
+
+    # Base test with max_differences=5
+    res_base, _ = compare_game_sheet(sheet, max_differences=5, extra_differences=0)
+    assert res_base.difference_count == 5
+
+    # Test +3 extra differences -> 8
+    res_plus, _ = compare_game_sheet(sheet, max_differences=5, extra_differences=3)
+    assert res_plus.difference_count == 8
+
+    # Test -2 extra differences -> 3
+    res_minus, _ = compare_game_sheet(sheet, max_differences=5, extra_differences=-2)
+    assert res_minus.difference_count == 3
+
+
+def test_detect_differences_lowers_threshold_when_under_target():
+    from diff_game.engine import detect_differences
+
+    ref = np.ones((600, 600, 3), dtype=np.uint8) * 128
+    tgt = ref.copy()
+    # Two high-contrast differences and one subtle difference (LAB delta E ~12 < 18)
+    cv2.circle(tgt, (150, 150), 15, (255, 255, 255), -1)
+    cv2.circle(tgt, (300, 150), 15, (255, 255, 255), -1)
+    cv2.circle(tgt, (450, 150), 15, (140, 140, 140), -1)
+
+    # Without target_count, default threshold=18 only finds the 2 strong differences
+    diffs_default = detect_differences(ref, tgt, diff_threshold=18)
+    assert len(diffs_default) == 2
+
+    # With target_count=3, threshold is lowered automatically to find all 3
+    diffs_target = detect_differences(ref, tgt, diff_threshold=18, target_count=3)
+    assert len(diffs_target) == 3
+
+
+def test_lv60_marks_stay_object_sized():
+    """Regression: sub-pixel panel offset used to flood the diff map and merge into panel-sized circles."""
+    from pathlib import Path
+    from diff_game.engine import compare_game_sheet
+
+    img_path = Path(__file__).parent / "fixtures" / "lv60_window.png"
+    if not img_path.exists():
+        pytest.skip("fixture missing")
+    img = cv2.imread(str(img_path))
+    result, _ = compare_game_sheet(img)
+    panel_w = result.ref_box[2]
+    assert result.difference_count == 16
+    assert all(d.radius <= panel_w * 0.15 for d in result.differences)
+
+
+def test_lv64_finds_faint_speaker_and_ignores_ceiling_streaks():
+    from pathlib import Path
+    from diff_game.engine import compare_game_sheet
+
+    img_path = Path(__file__).parent / "fixtures" / "lv64_window.png"
+    if not img_path.exists():
+        pytest.skip("fixture missing")
+    img = cv2.imread(str(img_path))
+    result, _ = compare_game_sheet(img)
+    rx, ry, rw, rh = result.ref_box
+    centers = [(d.global_ref_center[0] - rx, d.global_ref_center[1] - ry) for d in result.differences]
+    # Speaker to the right of the boy's head (panel coords ~ (485, 205))
+    assert any(abs(x - 485) < 30 and abs(y - 205) < 30 for x, y in centers)
+    # Nothing on the ceiling light strip (panel y < 60, between the side shelves)
+    assert not any(y < 60 and 120 < x < 480 for x, y in centers)
+
+
+@pytest.mark.parametrize("rel_path,total,found", [
+    ("assets/demo_original.jpg", 20, 0),
+    ("tests/fixtures/lv60_window.png", 20, 4),
+    ("tests/fixtures/lv64_window.png", 20, 19),
+])
+def test_badge_status_and_found_rings(rel_path, total, found):
+    """Checked badges are counted as found, and exactly that many green rings are detected
+    in the artwork (grass, foliage and green clothing must not be mistaken for rings)."""
+    from pathlib import Path
+    from diff_game.engine import detect_badge_status, detect_found_rings, detect_viewports
+
+    img_path = Path(__file__).parent.parent / rel_path
+    if not img_path.exists():
+        pytest.skip("fixture missing")
+    img = cv2.imread(str(img_path))
+    assert detect_badge_status(img) == (total, found)
+    (x, y, w, h), _, _ = detect_viewports(img)
+    assert len(detect_found_rings(img[y:y + h, x:x + w])) == found
+
+
+@pytest.mark.parametrize("rel_path", ["tests/fixtures/lv60_window.png", "tests/fixtures/lv64_window.png"])
+def test_second_round_never_marks_inside_green_rings(rel_path):
+    from pathlib import Path
+    from diff_game.engine import compare_game_sheet, detect_found_rings
+
+    img_path = Path(__file__).parent.parent / rel_path
+    if not img_path.exists():
+        pytest.skip("fixture missing")
+    img = cv2.imread(str(img_path))
+    result, _ = compare_game_sheet(img)
+    rx, ry, rw, rh = result.ref_box
+    rings = detect_found_rings(img[ry:ry + rh, rx:rx + rw])
+    for d in result.differences:
+        px, py = d.global_ref_center[0] - rx, d.global_ref_center[1] - ry
+        assert all(np.hypot(px - cx, py - cy) > r for cx, cy, r in rings)
+
+
+def test_all_found_returns_no_marks():
+    """When every badge is checked, nothing is left to mark."""
+    from unittest.mock import patch
+    from pathlib import Path
+
+    img_path = Path(__file__).parent / "fixtures" / "lv64_window.png"
+    if not img_path.exists():
+        pytest.skip("fixture missing")
+    img = cv2.imread(str(img_path))
+    from diff_game import engine
+    with patch.object(engine, "detect_badge_status", return_value=(19, 19)):
+        result, _ = engine.compare_game_sheet(img)
+    assert result.difference_count == 0
+
+
+def test_fragment_just_outside_found_ring_is_not_a_new_difference():
+    """Lv-74: the game's green ring did not fully enclose a found difference; the part sticking
+    out just past the ring edge must not be offered as the remaining difference."""
+    from diff_game.engine import detect_differences
+
+    ref = np.ones((300, 600, 3), dtype=np.uint8) * 128
+    tgt = ref.copy()
+    # A tall object change: mostly inside a ring at (150, 160) r=40, with its tip poking out above.
+    cv2.rectangle(tgt, (140, 105), (160, 190), (255, 255, 255), -1)
+    # A separate, genuine remaining difference far away.
+    cv2.circle(tgt, (450, 150), 15, (0, 0, 255), -1)
+
+    marks = detect_differences(ref, tgt, target_count=1, exclude_circles=[(150.0, 160.0, 40.0)])
+    assert len(marks) == 1
+    assert abs(marks[0].center_x - 450) <= 10 and abs(marks[0].center_y - 150) <= 10
+
+
+def test_skip_circles_moves_to_next_candidate():
+    """'n' in the HUD: a candidate the game rejected is skipped and is never shown again."""
+    from pathlib import Path
+    from diff_game.engine import compare_game_sheet
+
+    img_path = Path(__file__).parent / "fixtures" / "lv64_window.png"
+    if not img_path.exists():
+        pytest.skip("fixture missing")
+    img = cv2.imread(str(img_path))
+    first, _ = compare_game_sheet(img)
+    assert first.difference_count == 1
+    shown = first.differences[0]
+    second, _ = compare_game_sheet(img, skip_circles=[(shown.center_x, shown.center_y, shown.radius)])
+    for d in second.differences:
+        assert np.hypot(d.center_x - shown.center_x, d.center_y - shown.center_y) > shown.radius
+
+
+def test_lv74_single_character_change_on_couplet():
+    """Lv-74, second round (14 of 15 found). The remaining difference is one character on the
+    couplet (好男人 -> 坏男人): same ink colour, only the strokes differ, so colour difference misses
+    it and the shape-change fallback must find it. The fragment of a found difference poking out
+    above the large ring on the left must not be offered.
+    (Fixture was captured with the HUD overlay visible; its panel labels were made identical.)"""
+    from pathlib import Path
+    from diff_game.engine import compare_game_sheet
+
+    img_path = Path(__file__).parent / "fixtures" / "lv74_window_hud.png"
+    if not img_path.exists():
+        pytest.skip("fixture missing")
+    img = cv2.imread(str(img_path))
+    result, _ = compare_game_sheet(img)
+    assert result.target_badge_count == 15
+    assert result.found_count == 14
+    assert result.difference_count == 1
+    d = result.differences[0]
+    assert abs(d.center_x - 368) <= 15 and abs(d.center_y - 61) <= 15
 

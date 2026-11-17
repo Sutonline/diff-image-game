@@ -6,3 +6,6 @@ __pycache__/
 .DS_Store
 diff_game/overlay_bin
 diff_game/find_windows
+
+# local review scratch (screenshots, backups)
+.claude_review/

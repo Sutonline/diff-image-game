@@ -11,6 +11,7 @@ class DifferenceMark(BaseModel):
         description="(x, y, width, height)"
     )
     area: float
+    score: float = 0.0
     global_ref_center: Optional[Tuple[int, int]] = None
     global_tgt_center: Optional[Tuple[int, int]] = None
 
@@ -22,3 +23,5 @@ class DiffResult(BaseModel):
     execution_time_ms: float
     ref_box: Optional[Tuple[int, int, int, int]] = None
     tgt_box: Optional[Tuple[int, int, int, int]] = None
+    target_badge_count: Optional[int] = None
+    found_count: Optional[int] = None

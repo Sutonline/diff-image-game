@@ -31,7 +31,7 @@ async def api_compare(
     file: UploadFile = File(...),
     split_mode: str = Form("auto"),
     diff_threshold: int = Form(18),
-    min_area: int = Form(50),
+    min_area: int = Form(12),
     blur_radius: int = Form(3),
 ):
     try:

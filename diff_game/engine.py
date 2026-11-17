@@ -359,7 +359,9 @@ def split_game_sheet(
 
 
 def merge_overlapping_circles(
-    marks: List[DifferenceMark], buffer_ratio: float = 1.05, max_radius: int = 120
+    marks: List[DifferenceMark],
+    buffer_ratio: float = 1.05,
+    max_radius: int = 120,
 ) -> List[DifferenceMark]:
     """
     Guarantees that NO difference marks overlap.
@@ -417,6 +419,7 @@ def merge_overlapping_circles(
                             2 * new_r,
                         ),
                         area=merged.area + m2.area,
+                        score=merged.score + m2.score,
                     )
                     used.add(j)
                     changed = True
@@ -454,107 +457,338 @@ def apply_circular_nms(marks: List[DifferenceMark], overlap_threshold: float = 1
     return merge_overlapping_circles(marks, buffer_ratio=overlap_threshold)
 
 
+def _bbox_gap(p: List[float], q: List[float]) -> float:
+    """Computes minimum Euclidean gap between two axis-aligned bounding boxes [x1, y1, x2, y2]."""
+    dx = max(0.0, max(p[0], q[0]) - min(p[2], q[2]))
+    dy = max(0.0, max(p[1], q[1]) - min(p[3], q[3]))
+    return float(np.hypot(dx, dy))
+
+
+def _subpixel_align(ref: np.ndarray, tgt: np.ndarray) -> np.ndarray:
+    """Warps tgt onto ref with a near-identity affine transform estimated by ECC. Falls back to tgt unchanged."""
+    try:
+        g_ref = cv2.cvtColor(ref, cv2.COLOR_BGR2GRAY) if ref.ndim == 3 else ref
+        g_tgt = cv2.cvtColor(tgt, cv2.COLOR_BGR2GRAY) if tgt.ndim == 3 else tgt
+        if float(np.std(g_ref)) < 5.0:
+            return tgt
+        warp = np.eye(2, 3, dtype=np.float32)
+        criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 100, 1e-5)
+        _, warp = cv2.findTransformECC(g_ref.astype(np.float32), g_tgt.astype(np.float32), warp,
+                                       cv2.MOTION_AFFINE, criteria, None, 5)
+        linear_ok = np.allclose(warp[:, :2], np.eye(2), atol=0.02)
+        shift_ok = abs(float(warp[0, 2])) <= 4.0 and abs(float(warp[1, 2])) <= 4.0
+        if not (linear_ok and shift_ok):
+            return tgt
+        h, w = ref.shape[:2]
+        return cv2.warpAffine(tgt, warp, (w, h), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP,
+                              borderMode=cv2.BORDER_REPLICATE)
+    except cv2.error:
+        return tgt
+
+
+def _min_shift_diff(a: np.ndarray, b: np.ndarray, radius: int = 1) -> np.ndarray:
+    """For each pixel of a, the smallest colour distance to any pixel of b within +-radius px."""
+    best: Optional[np.ndarray] = None
+    for dy in range(-radius, radius + 1):
+        for dx in range(-radius, radius + 1):
+            shifted = np.roll(np.roll(b, dy, axis=0), dx, axis=1)
+            d = np.linalg.norm(a - shifted, axis=2)
+            best = d if best is None else np.minimum(best, d)
+    return best
+
+
+def _near_any_circle(xs: np.ndarray, ys: np.ndarray, circles: List[Tuple[float, float, float]]) -> bool:
+    """True if the closest pixel of a blob lies within (0.35 * r + 4) px outside any circle's edge."""
+    for cx, cy, r in circles:
+        gap = float(np.min(np.hypot(xs - cx, ys - cy))) - r
+        if gap <= 0.35 * r + 4.0:
+            return True
+    return False
+
+
+def _structural_change_peaks(
+    ref: np.ndarray,
+    tgt: np.ndarray,
+    blocked: List[Tuple[float, float, float]],
+    border: int,
+    max_peaks: int,
+    min_score: float = 0.15,
+) -> List[Tuple[float, float, float]]:
+    """
+    Fallback candidates for changes that keep the colours but alter the shape, e.g. one character
+    on a couplet changed (好 -> 坏): black ink on paper either way, so colour difference is tiny,
+    but the local stroke pattern no longer matches.
+
+    Works at native resolution (fine strokes vanish when downscaled). For every pixel, the best
+    normalised cross-correlation of a small window against the other panel within +-1px is
+    computed; 1 - NCC, weighted by local contrast, is high where high-contrast structure changed.
+    Low-contrast textures (carpets, walls, compression noise) are suppressed by the contrast weight.
+
+    blocked: [(cx, cy, r)] areas to ignore (already-found rings, existing candidates).
+    Returns up to max_peaks [(cx, cy, score)] in panel pixels, best first.
+    """
+    if max_peaks <= 0 or ref.ndim != 3:
+        return []
+    h, w = ref.shape[:2]
+    tgt = _subpixel_align(ref, tgt)
+    ga = cv2.cvtColor(ref, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    gb = cv2.cvtColor(tgt, cv2.COLOR_BGR2GRAY).astype(np.float32)
+    win = max(5, int(round(9 * w / 680.0)) | 1)
+    k = (win, win)
+
+    def _local(x: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        m = cv2.blur(x, k)
+        return m, np.sqrt(np.maximum(cv2.blur(x * x, k) - m * m, 1e-3))
+
+    ma, sa = _local(ga)
+    best: Optional[np.ndarray] = None
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            g = np.roll(np.roll(gb, dy, axis=0), dx, axis=1)
+            mb, sb = _local(g)
+            ncc = (cv2.blur(ga * g, k) - ma * mb) / (sa * sb)
+            best = ncc if best is None else np.maximum(best, ncc)
+    _, sb0 = _local(gb)
+    score = (1.0 - np.clip(best, -1.0, 1.0)) * np.minimum(np.maximum(sa, sb0) / 60.0, 1.0) ** 2
+
+    if border > 0:
+        score[:border, :] = 0
+        score[-border:, :] = 0
+        score[:, :border] = 0
+        score[:, -border:] = 0
+    for cx, cy, r in blocked:
+        cv2.circle(score, (int(round(cx)), int(round(cy))), int(round(r)), 0, -1)
+    sk = max(5, int(round(7 * w / 680.0)) | 1)
+    score = cv2.GaussianBlur(score, (sk, sk), 0)
+
+    peaks: List[Tuple[float, float, float]] = []
+    suppress = max(10, int(round(20 * w / 680.0)))
+    for _ in range(max_peaks):
+        _, val, _, loc = cv2.minMaxLoc(score)
+        if val < min_score:
+            break
+        peaks.append((float(loc[0]), float(loc[1]), float(val)))
+        cv2.circle(score, loc, suppress, 0, -1)
+    return peaks
+
+
 def detect_differences(
     ref_panel: np.ndarray,
     tgt_panel: np.ndarray,
-    diff_threshold: int = 14,
-    min_area: int = 25,
-    blur_radius: int = 2,
-    border_margin: int = 0,
+    diff_threshold: int = 18,
+    min_area: int = 12,
+    blur_radius: int = 3,
+    border_margin: int = 8,
+    target_count: Optional[int] = None,
+    exclude_circles: Optional[List[Tuple[float, float, float]]] = None,
 ) -> List[DifferenceMark]:
     """
-    Detects difference marks between two aligned panels with multi-channel color sensitivity,
-    noise filtering, and circular NMS.
+    Detects difference marks between two aligned panels:
+    1. Normalizes panels to fixed width 600px before detection.
+    2. Computes LAB color difference (delta E) on Gaussian-blurred normalized panels.
+    3. Zeros border margins, thresholds, removes noise via morphological open,
+       and connects nearby fragments via 9x9 ellipse dilation.
+    4. Extracts connected-component bounding boxes, adjusting threshold downward if
+       fewer than target_count or merging closest-gap bounding boxes if more than target_count.
+    5. Maps centers, bounding boxes, areas, and proportional radii back to original scale.
     """
     if ref_panel is None or tgt_panel is None or ref_panel.size == 0 or tgt_panel.size == 0:
         return []
 
     panel_h, panel_w = ref_panel.shape[:2]
-    ksize = 3
-
-    # Multi-channel color difference: preserves fine features (watches, jewelry, straps)
-    # without erosion from artificial cross-dilation
-    if len(ref_panel.shape) == 3 and ref_panel.shape[2] == 3:
-        b_ref = cv2.GaussianBlur(ref_panel, (ksize, ksize), 0)
-        b_tgt = cv2.GaussianBlur(tgt_panel, (ksize, ksize), 0)
-        diff = np.max(cv2.absdiff(b_ref, b_tgt), axis=2)
-    else:
-        blurred_ref = cv2.GaussianBlur(ref_panel, (ksize, ksize), 0)
-        blurred_tgt = cv2.GaussianBlur(tgt_panel, (ksize, ksize), 0)
-        diff = cv2.absdiff(blurred_ref, blurred_tgt)
-
-    # Exclude border seam if specified
-    if border_margin > 0 and panel_h > border_margin * 2 and panel_w > border_margin * 2:
-        diff_inner = diff[border_margin:panel_h - border_margin, border_margin:panel_w - border_margin]
-    else:
-        diff_inner = diff
-        border_margin = 0
-
-    # Guard: if panels have massive global difference (e.g. menu, ad, or game-over screen), reject false positives
-    if float(np.mean(diff_inner)) > 30.0:
+    if panel_h < 5 or panel_w < 5:
         return []
 
-    # Binary Threshold
-    _, thresh = cv2.threshold(diff_inner, diff_threshold, 255, cv2.THRESH_BINARY)
+    norm_w = 600.0
+    scale = norm_w / float(panel_w)
+    norm_ref = cv2.resize(ref_panel, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    norm_tgt = cv2.resize(tgt_panel, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
 
-    # Morphological Close to connect nearby pixels without deleting fine thin details
-    close_kernel_size = 5 if max(panel_h, panel_w) > 600 else 5
-    close_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_kernel_size, close_kernel_size))
-    closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, close_k)
+    # Sub-pixel alignment: window scaling often leaves the two panels offset by a fraction of a pixel,
+    # which turns every outline in the artwork into a false difference. Estimate a near-identity
+    # affine transform with ECC and warp the target panel onto the reference panel.
+    norm_tgt = _subpixel_align(norm_ref, norm_tgt)
 
-    # Connected components analysis for accurate pixel area
-    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(closed, connectivity=8)
+    ksize = 3
+    if len(norm_ref.shape) == 3 and norm_ref.shape[2] == 3:
+        lab_ref = cv2.cvtColor(cv2.GaussianBlur(norm_ref, (ksize, ksize), 0), cv2.COLOR_BGR2LAB).astype(np.float32)
+        lab_tgt = cv2.cvtColor(cv2.GaussianBlur(norm_tgt, (ksize, ksize), 0), cv2.COLOR_BGR2LAB).astype(np.float32)
+    else:
+        lab_ref = cv2.GaussianBlur(norm_ref, (ksize, ksize), 0).astype(np.float32)[..., None]
+        lab_tgt = cv2.GaussianBlur(norm_tgt, (ksize, ksize), 0).astype(np.float32)[..., None]
 
-    # Adaptive minimum area scaled with panel resolution
-    eff_min_area = max(min_area, int(min_area * (panel_w / 650.0) ** 1.5))
+    # Shift-tolerant symmetric difference: a pixel only counts as different if no pixel within
+    # +-1px in the other panel matches it. Removes residual outline jitter but keeps added/removed objects.
+    diff = np.maximum(_min_shift_diff(lab_ref, lab_tgt), _min_shift_diff(lab_tgt, lab_ref))
 
-    raw_marks: List[DifferenceMark] = []
-    for idx in range(1, num_labels):
-        area = float(stats[idx, cv2.CC_STAT_AREA])
-        if area < eff_min_area:
-            continue
+    margin = border_margin
+    if margin > 0 and diff.shape[0] > 2 * margin and diff.shape[1] > 2 * margin:
+        diff[:margin, :] = 0
+        diff[-margin:, :] = 0
+        diff[:, :margin] = 0
+        diff[:, -margin:] = 0
 
-        w = stats[idx, cv2.CC_STAT_WIDTH]
-        h = stats[idx, cv2.CC_STAT_HEIGHT]
-        cx = int(centroids[idx][0])
-        cy = int(centroids[idx][1])
+    # Differences the player already found (inside the game's green rings) are not candidates:
+    # blank them out so their fragments can neither take a slot nor be shown again.
+    if exclude_circles:
+        for ecx, ecy, er in exclude_circles:
+            cv2.circle(diff, (int(round(ecx * scale)), int(round(ecy * scale))),
+                       int(round(er * scale * 1.15 + 3)), 0, -1)
 
-        radius = max(14, int(min(max(w, h) * 0.55, (w + h) * 0.38)))
-        max_r_allowed = min(50, int(min(panel_h, panel_w) * 0.14))
-        radius = min(radius, max_r_allowed)
+    # Guard against completely mismatched screens (e.g. menus, ads, transitions)
+    if float(np.mean(diff)) > 45.0:
+        return []
 
-        actual_cx = int(cx + border_margin)
-        actual_cy = int(cy + border_margin)
+    excl_norm = [(ecx * scale, ecy * scale, er * scale) for ecx, ecy, er in (exclude_circles or [])]
 
-        # Ensure circle never clips across outer panel borders
-        max_dist_to_edge = min(
-            actual_cx - border_margin,
-            panel_w - border_margin - actual_cx,
-            actual_cy - border_margin,
-            panel_h - border_margin - actual_cy,
-        )
-        if max_dist_to_edge > 10:
-            radius = max(10, min(radius, max_dist_to_edge))
+    open_kernel = np.ones((2, 2), np.uint8)
+    dilate_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
 
-        raw_marks.append(
+    def _extract_blobs(thresh: float) -> List[List[float]]:
+        binary = (diff > thresh).astype(np.uint8) * 255
+        opened = cv2.morphologyEx(binary, cv2.MORPH_OPEN, open_kernel)
+        dilated = cv2.dilate(opened, dilate_kernel)
+        num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(dilated)
+        res: List[List[float]] = []
+        for i in range(1, num_labels):
+            x, y, w, h, _ = stats[i]
+            mask = (labels == i) & (diff > thresh)
+            active_px = int(mask.sum())
+            if active_px < min_area:
+                continue
+            # Reject thin straight streaks (1-3px thick, long): residual misalignment along a strong
+            # straight edge such as ceiling light strips or table rims, not a real object difference.
+            ys, xs = np.nonzero(mask)
+            raw_h = int(ys.max() - ys.min() + 1)
+            raw_w = int(xs.max() - xs.min() + 1)
+            if min(raw_h, raw_w) <= 3 and max(raw_h, raw_w) >= 4 * min(raw_h, raw_w):
+                continue
+            # A fragment hugging an excluded (already-found) ring is the part of that difference
+            # the game's ring did not fully enclose; it is not a new difference.
+            if _near_any_circle(xs, ys, excl_norm):
+                continue
+            res.append([float(x), float(y), float(x + w), float(y + h), float(diff[mask].sum()), float(active_px)])
+        return res
+
+    base_t = float(diff_threshold)
+    blobs = _extract_blobs(base_t)
+
+    def _structural_fill(existing: List[List[float]], deficit: int) -> List[List[float]]:
+        """Shape-change candidates (see _structural_change_peaks) as blobs in normalised coords."""
+        blocked = [(ecx, ecy, er * 1.35 + 6.0) for ecx, ecy, er in (exclude_circles or [])]
+        for bx1, by1, bx2, by2, *_ in existing:
+            blocked.append((((bx1 + bx2) / 2.0) / scale, ((by1 + by2) / 2.0) / scale,
+                            (max(bx2 - bx1, by2 - by1) / 2.0 + 6.0) / scale))
+        peaks = _structural_change_peaks(ref_panel, tgt_panel, blocked,
+                                         border=int(round(margin / scale)) if margin > 0 else 0,
+                                         max_peaks=deficit)
+        half = 10.0
+        return [[px * scale - half, py * scale - half, px * scale + half, py * scale + half,
+                 float(v) * 100.0, 1.0] for px, py, v in peaks]
+
+    if target_count is not None and target_count > 0 and len(blobs) < target_count:
+        # 1) Colour finds too few: first add places where high-contrast structure changed
+        #    (e.g. a single character), which colour difference misses.
+        blobs = blobs + _structural_fill(blobs, target_count - len(blobs))
+
+    if target_count is not None and target_count > 0 and len(blobs) < target_count:
+        # 2) Still too few: lower the colour threshold, keeping any structural candidates.
+        structural = [b for b in blobs if b[5] == 1.0]
+        best_blobs = blobs
+        for factor in (0.8, 0.65, 0.5):
+            cand_t = max(6.0, base_t * factor)
+            cand_blobs = _extract_blobs(cand_t)
+            for sb_ in structural:
+                if all(_bbox_gap(sb_, cb) > 3.0 for cb in cand_blobs):
+                    cand_blobs.append(sb_)
+            if len(cand_blobs) > len(best_blobs):
+                best_blobs = cand_blobs
+            if len(best_blobs) >= target_count:
+                break
+        blobs = best_blobs
+
+    # Fragments whose boxes touch (gap <= 3px) belong to the same object: always merge them first,
+    # so a split object never occupies two slots while a faint real difference is dropped.
+    merged_any = True
+    while merged_any and len(blobs) > 1:
+        merged_any = False
+        for i in range(len(blobs)):
+            for j in range(i + 1, len(blobs)):
+                if _bbox_gap(blobs[i], blobs[j]) <= 3.0:
+                    p, q = blobs[i], blobs[j]
+                    blobs[i] = [min(p[0], q[0]), min(p[1], q[1]), max(p[2], q[2]), max(p[3], q[3]),
+                                p[4] + q[4], p[5] + q[5]]
+                    del blobs[j]
+                    merged_any = True
+                    break
+            if merged_any:
+                break
+
+    if target_count is not None and target_count > 0:
+        norm_h, norm_w_px = diff.shape[:2]
+        max_side = 0.30 * min(norm_h, norm_w_px)
+        while len(blobs) > target_count:
+            energies = sorted(b[4] for b in blobs)
+            median_e = energies[len(energies) // 2]
+            weakest = min(range(len(blobs)), key=lambda k: blobs[k][4])
+            # 1) A blob far weaker than a typical difference is residual noise: drop it.
+            if blobs[weakest][4] < 0.10 * median_e:
+                del blobs[weakest]
+                continue
+            # 2) Otherwise merge the two closest fragments, as long as the result stays object-sized.
+            best: Optional[Tuple[float, int, int]] = None
+            for i in range(len(blobs)):
+                for j in range(i + 1, len(blobs)):
+                    p, q = blobs[i], blobs[j]
+                    mw = max(p[2], q[2]) - min(p[0], q[0])
+                    mh = max(p[3], q[3]) - min(p[1], q[1])
+                    if max(mw, mh) > max_side:
+                        continue
+                    gap = _bbox_gap(p, q)
+                    if best is None or gap < best[0]:
+                        best = (gap, i, j)
+            # 3) Nothing can be merged sensibly (or fragments are far apart): drop the weakest blob.
+            if best is None or best[0] > 0.08 * min(norm_h, norm_w_px):
+                del blobs[weakest]
+                continue
+            _, i, j = best
+            p, q = blobs[i], blobs[j]
+            blobs[i] = [
+                min(p[0], q[0]),
+                min(p[1], q[1]),
+                max(p[2], q[2]),
+                max(p[3], q[3]),
+                p[4] + q[4],
+                p[5] + q[5],
+            ]
+            del blobs[j]
+
+    blobs.sort(key=lambda z: (z[1], z[0]))
+
+    marks: List[DifferenceMark] = []
+    for idx, (x1, y1, x2, y2, energy, active_px) in enumerate(blobs, start=1):
+        cx = int(round((x1 + x2) / 2.0 / scale))
+        cy = int(round((y1 + y2) / 2.0 / scale))
+        r_norm = min(max(12.0, 0.6 * max(x2 - x1, y2 - y1)), 0.15 * min(diff.shape[:2]))
+        radius = max(1, int(round(r_norm / scale)))
+        bx = int(round(x1 / scale))
+        by = int(round(y1 / scale))
+        bw = max(1, int(round((x2 - x1) / scale)))
+        bh = max(1, int(round((y2 - y1) / scale)))
+        orig_area = float(active_px) / (scale * scale)
+        marks.append(
             DifferenceMark(
-                id=0,
-                center_x=actual_cx,
-                center_y=actual_cy,
+                id=idx,
+                center_x=cx,
+                center_y=cy,
                 radius=radius,
-                bounding_box=(
-                    max(0, actual_cx - w // 2),
-                    max(0, actual_cy - h // 2),
-                    w,
-                    h,
-                ),
-                area=area,
+                bounding_box=(bx, by, bw, bh),
+                area=orig_area,
+                score=float(energy),
             )
         )
 
-    # Apply non-overlapping merge with balanced buffer ratio to prevent over-merging nearby distinct marks
-    max_merge_r = min(55, int(min(panel_h, panel_w) * 0.16))
-    return merge_overlapping_circles(raw_marks, buffer_ratio=0.85, max_radius=max_merge_r)
+    return marks
 
 
 def annotate_game_sheet(
@@ -605,11 +839,10 @@ def annotate_game_sheet(
     return annotated
 
 
-def detect_target_differences_count(image: np.ndarray) -> Optional[int]:
+def _detect_badge_row(image: np.ndarray):
     """
-    Automatically detects the number of question mark ('?') badges/slots in the mini-program UI
-    representing the exact target number of differences to find in the level.
-    Returns the count (e.g. 15), or None if no uniform badge row exists (e.g. cropped artwork).
+    Finds the row of badge slots ('?' for unfound, green check for found) above the panels.
+    Returns (row_circles sorted by x, badge strip image) or None.
     """
     if image is None or image.size == 0:
         return None
@@ -638,9 +871,10 @@ def detect_target_differences_count(image: np.ndarray) -> Optional[int]:
 
     detected = circles[0]
     y_coords = detected[:, 1]
-    hist, bin_edges = np.histogram(y_coords, bins=10)
-    best_bin = np.argmax(hist)
-    target_y = (bin_edges[best_bin] + bin_edges[best_bin + 1]) / 2.0
+    vals, counts = np.unique(np.round(y_coords), return_counts=True)
+    mode_y = float(vals[np.argmax(counts)])
+    inliers = y_coords[np.abs(y_coords - mode_y) < 8]
+    target_y = float(np.median(inliers)) if len(inliers) > 0 else float(np.median(y_coords))
 
     row_circles = [c for c in detected if abs(c[1] - target_y) < 8]
     if len(row_circles) < 5:
@@ -657,24 +891,143 @@ def detect_target_differences_count(image: np.ndarray) -> Optional[int]:
     if np.std(diffs) > 5.0:
         return None
 
-    return len(row_circles)
+    return row_circles, strip
+
+
+def detect_target_differences_count(image: np.ndarray) -> Optional[int]:
+    """
+    Number of badge slots in the mini-program UI = total differences in the level
+    (found + unfound). Returns None if no uniform badge row exists (e.g. cropped artwork).
+    """
+    row = _detect_badge_row(image)
+    return len(row[0]) if row else None
+
+
+def detect_badge_status(image: np.ndarray) -> Optional[Tuple[int, int]]:
+    """
+    Returns (total, found): found badges are drawn with the game's green check mark,
+    unfound ones are beige '?' slots.
+    """
+    row = _detect_badge_row(image)
+    if not row:
+        return None
+    circles, strip = row
+    green = _game_green_mask(strip)
+    found = 0
+    for cx, cy, r in circles:
+        disc = np.zeros(green.shape, np.uint8)
+        cv2.circle(disc, (int(cx), int(cy)), max(2, int(r * 0.9)), 255, -1)
+        inside = disc > 0
+        if inside.sum() and float(np.mean(green[inside] > 0)) > 0.12:
+            found += 1
+    return len(circles), found
+
+
+def _game_green_mask(bgr: np.ndarray) -> np.ndarray:
+    """Pixels in the yellow-green colour the game uses for its 'found' rings and check marks."""
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    return cv2.inRange(hsv, (34, 110, 140), (52, 215, 235))
+
+
+def _fit_circle(xs: np.ndarray, ys: np.ndarray) -> Optional[Tuple[float, float, float]]:
+    """Least-squares (Kasa) circle fit; works on partial arcs such as rings clipped by the panel edge."""
+    A = np.column_stack([xs, ys, np.ones_like(xs)]).astype(np.float64)
+    b = -(xs.astype(np.float64) ** 2 + ys.astype(np.float64) ** 2)
+    sol, *_ = np.linalg.lstsq(A, b, rcond=None)
+    cx, cy = -sol[0] / 2.0, -sol[1] / 2.0
+    r2 = cx * cx + cy * cy - sol[2]
+    return (float(cx), float(cy), float(np.sqrt(r2))) if r2 > 0 else None
+
+
+def detect_found_rings(panel: np.ndarray) -> List[Tuple[float, float, float]]:
+    """
+    Detects the green rings the game draws around differences the player has already found.
+    The ring's size is the game's own definition of how big that one difference is.
+
+    Green regions are kept only where they form a thin band (ring stroke); thick green areas such
+    as lawns and trees are removed by a morphological opening. Each candidate band must fit a
+    circle tightly and be green almost all the way round (rings clipped by the panel edge are
+    accepted), which rejects stray arcs of foliage or clothing.
+    Returns [(cx, cy, r)] in panel pixels.
+    """
+    if panel is None or panel.size == 0:
+        return []
+    h, w = panel.shape[:2]
+    unit = w / 676.0
+    green = _game_green_mask(panel)
+
+    thick_k = max(7, int(round(11 * unit)) | 1)
+    thick = cv2.morphologyEx(green, cv2.MORPH_OPEN,
+                             cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (thick_k, thick_k)))
+    band = cv2.bitwise_and(green, cv2.bitwise_not(cv2.dilate(thick, np.ones((5, 5), np.uint8))))
+    band = cv2.morphologyEx(band, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(band)
+    rings: List[Tuple[float, float, float]] = []
+    for i in range(1, n):
+        if stats[i, cv2.CC_STAT_AREA] < 60 * unit:
+            continue
+        ys, xs = np.nonzero(labels == i)
+        fit = _fit_circle(xs, ys)
+        # Robust refit: a ring touching other green (leaves, a green cup) drags the first fit off,
+        # so drop points far from the current circle and fit again.
+        for _ in range(2):
+            if fit is None:
+                break
+            cx, cy, r = fit
+            keep = np.abs(np.hypot(xs - cx, ys - cy) - r) < max(3.0, 0.15 * r)
+            if keep.sum() < 20:
+                fit = None
+                break
+            xs, ys = xs[keep], ys[keep]
+            fit = _fit_circle(xs, ys)
+        if fit is None:
+            continue
+        cx, cy, r = fit
+        if not (8 * unit <= r <= 0.3 * min(h, w)):
+            continue
+        if float(np.mean(np.abs(np.hypot(xs - cx, ys - cy) - r))) > 0.08 * r:
+            continue
+        thickness = len(xs) / (2 * np.pi * r)
+        if not (2.0 * unit <= thickness <= 0.5 * r):
+            continue
+        # Walk along the fitted circle: a drawn ring is green almost all the way round
+        # (except where clipped by the panel edge); stray arcs of foliage or clothing are not.
+        t = np.linspace(0, 2 * np.pi, 180, endpoint=False)
+        px = np.round(cx + r * np.cos(t)).astype(int)
+        py = np.round(cy + r * np.sin(t)).astype(int)
+        inside = (px >= 0) & (px < w) & (py >= 0) & (py < h)
+        if inside.mean() < 0.5:
+            continue
+        on_ring = cv2.dilate(green, np.ones((3, 3), np.uint8))[py[inside], px[inside]] > 0
+        if float(np.mean(on_ring)) < 0.80:
+            continue
+        rings.append((cx, cy, r))
+    return rings
 
 
 def compare_game_sheet(
     image: np.ndarray,
     split_mode: str = "auto",
-    diff_threshold: int = 14,
-    min_area: int = 25,
-    blur_radius: int = 2,
+    diff_threshold: int = 18,
+    min_area: int = 12,
+    blur_radius: int = 3,
     max_differences: Optional[int] = None,
+    extra_differences: int = 0,
     custom_boxes: Optional[Tuple[Tuple[int, int, int, int], Tuple[int, int, int, int]]] = None,
     use_fixed_wechat: bool = False,
+    skip_circles: Optional[List[Tuple[float, float, float]]] = None,
 ) -> Tuple[DiffResult, np.ndarray]:
     """
     Main high-level comparison pipeline:
     1. Detects panel viewports (or uses custom calibrated boxes).
-    2. Compares panels with adaptive morphology and NMS.
-    3. Annotates symmetric difference marks.
+    2. Micro-aligns panels and auto-detects target count from UI '?' badges.
+    3. Compares normalized panels using LAB delta E and dilation clustering.
+    4. Annotates symmetric difference marks.
+
+    skip_circles: [(cx, cy, r)] in reference-panel pixels of candidates the player rejected
+    (the game did not accept a click there); they are excluded like already-found rings so the
+    next-best candidate is shown instead.
     """
     start_time = time.perf_counter()
 
@@ -685,13 +1038,10 @@ def compare_game_sheet(
         ref_offset = (rx, ry)
         tgt_offset = (tx, ty)
         effective_mode = "custom"
-        border_margin = 0
     else:
         ref_panel, tgt_panel, effective_mode, ref_offset, tgt_offset = split_game_sheet(
             image, split_mode=split_mode, return_offsets=True, use_fixed_wechat=use_fixed_wechat
         )
-        # If viewport has surrounding margins (offset > 15px), ignore outer 16px frame border
-        border_margin = 16 if (ref_offset[1] > 15 or ref_offset[0] > 15) else 0
 
     if ref_panel is None or tgt_panel is None or ref_panel.size == 0 or tgt_panel.size == 0:
         return (
@@ -704,33 +1054,56 @@ def compare_game_sheet(
             image.copy(),
         )
 
+    # Auto-detect target differences count from UI question mark slots if not explicitly set
+    effective_max = max_differences
+    auto_badge_count = None
+    found_count = None
+    exclude_circles: List[Tuple[float, float, float]] = []
+    rings_used = False
+    if effective_max is None or effective_max <= 0:
+        status = detect_badge_status(image)
+        if status is not None and status[0] > 0:
+            auto_badge_count, found_count = status
+            effective_max = auto_badge_count
+
+    # Apply manual delta adjustment if specified
+    if effective_max is not None and effective_max > 0 and extra_differences != 0:
+        effective_max = max(1, effective_max + extra_differences)
+
     # Micro-align panels to absorb asymmetric borders, independent widths, or minor translation jitter
     ref_aligned, tgt_aligned, (ref_sub_x, ref_sub_y), (tgt_sub_x, tgt_sub_y) = align_panels_content(
         ref_panel, tgt_panel
     )
 
-    differences = detect_differences(
-        ref_panel=ref_aligned,
-        tgt_panel=tgt_aligned,
-        diff_threshold=diff_threshold,
-        min_area=min_area,
-        blur_radius=blur_radius,
-        border_margin=border_margin,
-    )
+    # Already-found differences: the game circles them in green. Use those rings (the game's own
+    # notion of how big one difference is) to exclude them, and only look for the remaining '?' slots.
+    if found_count:
+        rings = detect_found_rings(ref_aligned)
+        # Trust the ring detector only when it roughly agrees with the number of checked badges.
+        if 0 < len(rings) <= found_count + 1:
+            exclude_circles = rings
+            rings_used = True
+            remaining = max(0, auto_badge_count - found_count)
+            effective_max = remaining
+            if extra_differences != 0:
+                effective_max = max(1, remaining + extra_differences)
 
-    # Auto-detect target differences count from UI question mark slots if not explicitly set
-    effective_max = max_differences
-    if effective_max is None or effective_max <= 0:
-        auto_count = detect_target_differences_count(image)
-        if auto_count is not None and auto_count > 0:
-            effective_max = auto_count
+    if skip_circles:
+        exclude_circles = list(exclude_circles) + [tuple(map(float, c)) for c in skip_circles]
 
-    # If maximum differences limit is specified (or auto-detected from UI ? badges), select top-K
-    if effective_max is not None and effective_max > 0 and len(differences) > effective_max:
-        differences = sorted(differences, key=lambda d: d.area, reverse=True)[:effective_max]
-        differences.sort(key=lambda d: (d.center_y, d.center_x))
-        for idx, d in enumerate(differences, 1):
-            d.id = idx
+    if effective_max == 0:
+        differences = []
+    else:
+        differences = detect_differences(
+            ref_panel=ref_aligned,
+            tgt_panel=tgt_aligned,
+            diff_threshold=diff_threshold,
+            min_area=min_area,
+            blur_radius=blur_radius,
+            border_margin=8,
+            target_count=effective_max if (effective_max is not None and effective_max > 0) else None,
+            exclude_circles=exclude_circles or None,
+        )
 
     # Populate global coordinates including micro-alignment sub-offsets
     rx, ry = ref_offset
@@ -756,6 +1129,8 @@ def compare_game_sheet(
         execution_time_ms=round(duration_ms, 2),
         ref_box=(rx, ry, ref_panel.shape[1], ref_panel.shape[0]),
         tgt_box=(tx, ty, tgt_panel.shape[1], tgt_panel.shape[0]),
+        target_badge_count=auto_badge_count,
+        found_count=found_count if rings_used else None,
     )
 
     return result, annotated_image

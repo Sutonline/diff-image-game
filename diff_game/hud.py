@@ -24,6 +24,9 @@ from diff_game.config import (
     get_viewport_config_path,
 )
 
+# Marks shown by the most recent solve, in reference-panel coordinates (cx, cy, r).
+LAST_SHOWN_MARKS: List[Tuple[float, float, float]] = []
+
 OVERLAY_SWIFT_SOURCE = Path(__file__).parent / "overlay.swift"
 OVERLAY_BIN_PATH = Path(__file__).parent / "overlay_bin"
 
@@ -136,15 +139,20 @@ def solve_and_display_hud(
     window: Dict[str, Any],
     click_through: bool = True,
     timeout: float = 15.0,
-    diff_threshold: int = 14,
-    min_area: int = 25,
+    diff_threshold: int = 18,
+    min_area: int = 12,
     max_marks: int = 0,
+    extra_marks: int = 0,
     use_fixed_wechat: bool = False,
+    skip_circles: Optional[List[Tuple[float, float, float]]] = None,
 ) -> int:
     """
     Captures game window, solves spot-the-difference, and displays native overlay.
-    Returns the number of detected differences.
+    Returns the number of detected differences. The marks shown are stored in LAST_SHOWN_MARKS
+    (reference-panel coordinates) so the runner can skip them on request ('n').
     """
+    global LAST_SHOWN_MARKS
+    LAST_SHOWN_MARKS = []
     # Always kill previous overlay window before capturing to prevent capturing old overlay marks
     kill_existing_overlays()
 
@@ -179,17 +187,34 @@ def solve_and_display_hud(
         diff_threshold=diff_threshold,
         min_area=min_area,
         max_differences=max_marks if max_marks > 0 else None,
+        extra_differences=extra_marks,
         use_fixed_wechat=use_fixed_wechat,
+        skip_circles=skip_circles,
     )
+    LAST_SHOWN_MARKS = [(float(d.center_x), float(d.center_y), float(d.radius)) for d in result.differences]
 
     diff_count = len(result.differences)
-    if max_marks > 0 and diff_count == max_marks:
+    badge_info = f"识别到底部?标记: {result.target_badge_count} 处" if result.target_badge_count else None
+    if result.found_count:
+        remaining = (result.target_badge_count or 0) - result.found_count
+        badge_info = (f"本关共 {result.target_badge_count} 处，已找到 {result.found_count} 处（绿圈已跳过），"
+                      f"剩余 {remaining} 处")
+
+    if extra_marks != 0:
+        base_desc = f"底部标记 {result.target_badge_count} 处" if result.target_badge_count else (f"预设 {max_marks} 处" if max_marks > 0 else "自动")
+        print(f"🎯 检出差异: {diff_count} 处 ({base_desc}，手动调整: {extra_marks:+d} -> 优选 Top {diff_count}，耗时: {result.execution_time_ms} ms)")
+    elif max_marks > 0 and diff_count == max_marks:
         print(f"🎯 检出差异: {diff_count} 处 (按显著度优选 Top {max_marks}，耗时: {result.execution_time_ms} ms)")
+    elif badge_info:
+        print(f"🎯 检出差异: {diff_count} 处 ({badge_info}，耗时: {result.execution_time_ms} ms)")
     else:
         print(f"🎯 检出差异: {diff_count} 处 (耗时: {result.execution_time_ms} ms)")
 
     if diff_count == 0:
-        print("💡 未检出差异（可能处于主菜单/结算界面或无明显色差）")
+        if result.found_count and result.target_badge_count and result.found_count >= result.target_badge_count:
+            print("🎉 本关差异已全部找到！")
+        else:
+            print("💡 未检出差异（可能处于主菜单/结算界面或无明显色差）")
         return 0
 
     # Format differences for native overlay
